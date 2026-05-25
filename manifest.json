@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "ViewShot",
+  "version": "0.2.1",
+  "description": "One-click screenshots: visible area, full page, or a region. PNG/JPG/WebP, download or copy. 100% local — no account, no cloud, no tracking.",
+  "permissions": ["activeTab", "downloads", "scripting", "storage", "offscreen"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ViewShot — screenshot this tab",
+    "default_icon": { "16": "icon16.png", "32": "icon32.png", "48": "icon48.png", "128": "icon128.png" }
+  },
+  "icons": { "16": "icon16.png", "32": "icon32.png", "48": "icon48.png", "128": "icon128.png" },
+  "background": { "service_worker": "background.js" },
+  "commands": {
+    "capture-visible": {
+      "suggested_key": { "default": "Alt+Shift+V" },
+      "description": "Capture visible area"
+    },
+    "capture-fullpage": {
+      "suggested_key": { "default": "Alt+Shift+F" },
+      "description": "Capture full page"
+    },
+    "capture-region": {
+      "suggested_key": { "default": "Alt+Shift+R" },
+      "description": "Capture a region"
+    }
+  }
+}
