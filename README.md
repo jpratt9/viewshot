@@ -16,4 +16,4 @@ A fast, minimal, **open-source** Chrome extension for screenshots — capture th
 3. Pin the ViewShot icon and click it (or use the keyboard shortcut)
 
 ## License
-[MIT](LICENSE) © John Pratt
+[GNU GPLv3](LICENSE) © John Pratt
