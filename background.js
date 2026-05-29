@@ -1,4 +1,4 @@
-const DEFAULTS = { format: 'png', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false };
+const DEFAULTS = { format: 'png', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -26,9 +26,14 @@ async function runCapture(mode, opts) {
   const tab = await getActiveTab();
   if (!tab) return;
   let png;
-  if (mode === 'visible') png = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-  else if (mode === 'fullpage') png = await captureFullPage(tab);
-  else if (mode === 'region') png = await captureRegion(tab);
+  if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
+  try {
+    if (mode === 'visible') png = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    else if (mode === 'fullpage') png = await captureFullPage(tab);
+    else if (mode === 'region') png = await captureRegion(tab);
+  } finally {
+    if (opts.hideScrollbar) await setScrollbarHidden(tab, false); // restore
+  }
   if (!png) return;
 
   if (opts.toClipboard) {
@@ -105,6 +110,30 @@ async function setFixedHidden(tab, hide) {
       } else if (window.__shotHidden) {
         for (const [el, v] of window.__shotHidden) el.style.visibility = v;
         window.__shotHidden = null;
+      }
+    },
+    args: [hide],
+  });
+}
+
+// Temporarily hide the page scrollbar(s) so they don't show up in the shot.
+// Uses a removable <style> rather than overflow:hidden so scrolling still
+// works (the full-page mode relies on scrolling to stitch slices).
+async function setScrollbarHidden(tab, hide) {
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: (doHide) => {
+      const ID = '__shotHideScrollbar';
+      const existing = document.getElementById(ID);
+      if (doHide) {
+        if (existing) return;
+        const style = document.createElement('style');
+        style.id = ID;
+        style.textContent =
+          '::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}html{scrollbar-width:none!important}';
+        (document.head || document.documentElement).appendChild(style);
+      } else if (existing) {
+        existing.remove();
       }
     },
     args: [hide],

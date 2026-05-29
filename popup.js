@@ -1,4 +1,4 @@
-const DEFAULTS = { format: 'png', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false };
+const DEFAULTS = { format: 'png', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true };
 const $ = (id) => document.getElementById(id);
 
 async function load() {
@@ -10,6 +10,7 @@ async function load() {
   $('qualityVal').textContent = Math.round(o.quality * 100) + '%';
   $('filename').value = o.filename;
   $('toClipboard').checked = o.toClipboard;
+  $('hideScrollbar').checked = o.hideScrollbar;
   toggleQuality();
 }
 
@@ -19,6 +20,7 @@ function read() {
     quality: parseFloat($('quality').value),
     filename: $('filename').value.trim() || 'shot-{date}-{time}',
     toClipboard: $('toClipboard').checked,
+    hideScrollbar: $('hideScrollbar').checked,
   };
 }
 
@@ -38,6 +40,7 @@ $('quality').addEventListener('input', () => { $('qualityVal').textContent = Mat
 $('quality').addEventListener('change', save);
 $('filename').addEventListener('change', save);
 $('toClipboard').addEventListener('change', save);
+$('hideScrollbar').addEventListener('change', save);
 $('shortcuts').addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }); });
 
 load();
