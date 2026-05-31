@@ -3,6 +3,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === 'capture') runCapture(msg.mode, msg.opts).catch((e) => console.error('[ViewShot]', e));
+  else if (msg?.type === 'rec-start') startRecording(msg.streamId, msg.opts).catch((e) => console.error('[ViewShot]', e));
+  else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
+  else if (msg?.type === 'rec-failed') chrome.storage.local.remove('rec').then(() => flashBadge('!'));
 });
 
 chrome.commands.onCommand.addListener(async (cmd) => {
@@ -161,14 +164,63 @@ async function captureRegion(tab) {
   return await blobToDataURL(await canvas.convertToBlob({ type: 'image/png' }));
 }
 
-// ---- clipboard via an offscreen document ----
+// ---- offscreen document (shared by clipboard + recording; only one allowed) ----
+let offscreenCreating;
+async function ensureOffscreen() {
+  const has = await chrome.offscreen.hasDocument();
+  console.log('[ViewShot] ensureOffscreen hasDocument=', has);
+  if (has) return;
+  if (!offscreenCreating) {
+    offscreenCreating = chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['CLIPBOARD', 'USER_MEDIA'],
+      justification: 'Write screenshots to the clipboard and record the tab to video',
+    });
+  }
+  await offscreenCreating;
+  offscreenCreating = null;
+  console.log('[ViewShot] offscreen document created');
+}
+
+// ---- clipboard via the offscreen document ----
 async function copyImage(pngDataUrl) {
-  await chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: ['CLIPBOARD'],
-    justification: 'Write the screenshot image to the clipboard',
-  }).catch(() => {});
+  await ensureOffscreen();
   await chrome.runtime.sendMessage({ type: 'shot-clipboard', dataUrl: pngDataUrl });
+}
+
+// ---- record the visible tab to WebM/GIF via the offscreen document ----
+const log = (...a) => console.log('[ViewShot]', ...a);
+
+async function flashBadge(text) {
+  await chrome.action.setBadgeBackgroundColor({ color: '#e5534b' });
+  await chrome.action.setBadgeText({ text });
+  setTimeout(() => chrome.action.setBadgeText({ text: '' }), 3000);
+}
+
+async function startRecording(streamId, opts) {
+  log('rec-start received, opts=', opts, 'streamId=', streamId);
+  // The stream id is minted in the popup (under its user gesture); we just wire
+  // it to the offscreen recorder, which is the only context with media APIs.
+  const tab = await getActiveTab(); // for the filename only
+  await ensureOffscreen();
+  log('offscreen ready, sending rec-start-offscreen, format=', opts.format);
+  // Persist enough to name the file at stop time, surviving a worker restart.
+  await chrome.storage.local.set({ rec: { url: tab?.url, title: tab?.title, format: opts.format, filename: opts.filename } });
+  await chrome.action.setBadgeBackgroundColor({ color: '#e5534b' });
+  await chrome.action.setBadgeText({ text: 'REC' });
+  await chrome.runtime.sendMessage({ type: 'rec-start-offscreen', streamId, format: opts.format });
+  log('rec-start-offscreen sent');
+}
+
+async function stopRecording() {
+  log('rec-stop received');
+  const { rec } = await chrome.storage.local.get('rec');
+  if (!rec) { console.warn('[ViewShot] stop with no active recording'); return; }
+  const filename = buildName(rec.filename, rec.format, { url: rec.url, title: rec.title });
+  log('stopping, will save as', filename);
+  await chrome.storage.local.remove('rec');
+  await chrome.action.setBadgeText({ text: '' });
+  await chrome.runtime.sendMessage({ type: 'rec-stop-offscreen', filename });
 }
 
 // ---- helpers ----

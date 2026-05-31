@@ -5,11 +5,13 @@
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
-  <div class="modes">
-    <button class="mode" data-mode="visible"><span class="ico">▢</span>Visible</button>
-    <button class="mode" data-mode="fullpage"><span class="ico">▤</span>Full page</button>
-    <button class="mode" data-mode="region"><span class="ico">⛶</span>Region</button>
+  <div class="modes" id="modes">
+    <button class="mode" data-mode="visible"><span class="ico">▢</span><span class="lbl">Visible</span></button>
+    <button class="mode" data-mode="fullpage"><span class="ico">▤</span><span class="lbl">Full page</span></button>
+    <button class="mode" data-mode="region"><span class="ico">⛶</span><span class="lbl">Region</span></button>
   </div>
+
+  <div class="err" id="err" hidden></div>
 
   <div class="opts">
     <label class="row">
@@ -18,6 +20,8 @@
         <option value="png">PNG</option>
         <option value="jpg">JPG</option>
         <option value="webp">WebP</option>
+        <option value="webm">WebM (record)</option>
+        <option value="gif">GIF (record)</option>
       </select>
     </label>
 
@@ -47,6 +51,8 @@
     <span id="hint">{date} {time} {domain} {title}</span>
     <a href="#" id="shortcuts">Shortcuts</a>
   </div>
+
+  <button class="mode stop" id="stopBtn" disabled><span class="ico">⏹</span><span class="lbl">Stop recording</span></button>
 
   <script src="popup.js"></script>
 </body>

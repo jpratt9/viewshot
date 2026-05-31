@@ -15,6 +15,14 @@ body {
 .mode:hover { background: #2a2a2a; border-color: #39d353; }
 .mode:active { transform: translateY(1px); }
 .mode .ico { font-size: 19px; line-height: 1; color: #39d353; }
+.mode:disabled { opacity: .4; cursor: not-allowed; }
+.mode:disabled:hover { background: #222; border-color: #333; }
+/* Stop button: pinned below the fold, greyed until a recording is live. */
+.mode.stop { flex-direction: row; justify-content: center; gap: 8px; width: 100%; padding: 12px; margin-top: 12px; }
+.mode.stop:not(:disabled), .mode.stop:not(:disabled):hover { border-color: #e5534b; }
+.mode.stop:not(:disabled) .ico { color: #e5534b; }
+.mode.stop:disabled .ico { color: #666; }
+.err { margin: 8px 0 0; padding: 7px 9px; background: #2a1414; border: 1px solid #e5534b; border-radius: 6px; color: #ff9b94; font-size: 12px; }
 .opts { display: flex; flex-direction: column; gap: 9px; }
 .row { display: flex; align-items: center; gap: 8px; }
 .row > span:first-child { width: 52px; color: #9aa0a6; flex-shrink: 0; }
