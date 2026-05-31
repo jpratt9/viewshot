@@ -179,7 +179,14 @@ async function ensureOffscreen() {
   }
   await offscreenCreating;
   offscreenCreating = null;
-  console.log('[ViewShot] offscreen document created');
+  // createDocument can resolve just before the page's message listener is live,
+  // so the first rec-start would be dropped. Ping until it answers (the cause
+  // of the "press record twice to start" bug).
+  for (let i = 0; i < 40; i++) {
+    try { if ((await chrome.runtime.sendMessage({ type: 'offscreen-ping' })) === 'pong') break; } catch {}
+    await sleep(25);
+  }
+  console.log('[ViewShot] offscreen document ready');
 }
 
 // ---- clipboard via the offscreen document ----
@@ -209,7 +216,24 @@ async function startRecording(streamId, opts) {
   await chrome.action.setBadgeBackgroundColor({ color: '#e5534b' });
   await chrome.action.setBadgeText({ text: 'REC' });
   await chrome.runtime.sendMessage({ type: 'rec-start-offscreen', streamId, format: opts.format });
+  if (tab) blipRecordingIndicator(tab.id);
   log('rec-start-offscreen sent');
+}
+
+// A quick green "blip" — a soft glow hugging the viewport edges that fades in
+// and out, the way Claude tints the tab borders when it takes control. Just an
+// edge hue, no full-screen flash. Pointer-events:none so it never blocks the page.
+function blipRecordingIndicator(tabId) {
+  chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const o = document.createElement('div');
+      o.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;box-shadow:inset 0 0 44px 10px rgba(57,211,83,.6);opacity:0;';
+      (document.body || document.documentElement).appendChild(o);
+      o.animate([{ opacity: 0 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], { duration: 650, easing: 'ease-out' })
+        .onfinish = () => o.remove();
+    },
+  }).catch((e) => console.error('[ViewShot] blip failed:', e));
 }
 
 async function stopRecording() {

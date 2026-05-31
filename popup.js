@@ -66,15 +66,15 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
       }
       await save();
       chrome.runtime.sendMessage({ type: 'rec-start', streamId, opts });
+      $('stopBtn').disabled = false; // popup stays open, so reflect the live recording
     } else {
       await save();
       chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, opts });
     }
-    window.close();
   });
 });
 
-$('stopBtn').addEventListener('click', () => { if ($('stopBtn').disabled) return; chrome.runtime.sendMessage({ type: 'rec-stop' }); window.close(); });
+$('stopBtn').addEventListener('click', () => { if ($('stopBtn').disabled) return; chrome.runtime.sendMessage({ type: 'rec-stop' }); $('stopBtn').disabled = true; });
 
 $('format').addEventListener('change', () => { toggleQuality(); toggleRec(); save(); });
 $('quality').addEventListener('input', () => { $('qualityVal').textContent = Math.round($('quality').value * 100) + '%'; });

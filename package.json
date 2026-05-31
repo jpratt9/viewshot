@@ -1,0 +1,9 @@
+{
+  "name": "viewshot",
+  "version": "0.3.0",
+  "description": "ViewShot — Manifest V3 screenshot & tab-recording extension",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  }
+}

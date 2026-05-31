@@ -3,7 +3,8 @@
 const log = (...a) => console.log('[ViewShot/offscreen]', ...a);
 log('offscreen loaded, GIF available =', typeof GIF !== 'undefined');
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.type === 'offscreen-ping') { sendResponse('pong'); return; }
   if (msg?.type === 'shot-clipboard') copyToClipboard(msg.dataUrl);
   else if (msg?.type === 'rec-start-offscreen') { log('rec-start-offscreen, format=', msg.format); startRecording(msg.streamId, msg.format).catch(onRecError); }
   else if (msg?.type === 'rec-stop-offscreen') { log('rec-stop-offscreen, filename=', msg.filename); stopRecording(msg.filename); }
