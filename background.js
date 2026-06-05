@@ -5,6 +5,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === 'capture') runCapture(msg.mode, msg.opts).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-start') startRecording(msg.streamId, msg.opts).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
+  else if (msg?.type === 'rec-cap-hit') stopRecording().then(() => flashBadge('MAX')).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-failed') chrome.storage.local.remove('rec').then(() => flashBadge('!'));
 });
 
@@ -215,25 +216,49 @@ async function startRecording(streamId, opts) {
   await chrome.storage.local.set({ rec: { url: tab?.url, title: tab?.title, format: opts.format, filename: opts.filename } });
   await chrome.action.setBadgeBackgroundColor({ color: '#e5534b' });
   await chrome.action.setBadgeText({ text: 'REC' });
-  await chrome.runtime.sendMessage({ type: 'rec-start-offscreen', streamId, format: opts.format });
-  if (tab) blipRecordingIndicator(tab.id);
+  // Play the edge-glow blip BEFORE starting the recorder so its animation
+  // doesn't contaminate the first second of the output. On chrome:// pages
+  // where injection fails, blipRecordingIndicator returns immediately and we
+  // skip straight to recording — the badge + Chrome's own blue capture border
+  // are still visible to the user as recording-active cues.
+  if (tab) await blipRecordingIndicator(tab.id);
+  // Forward the tab's pixel dims so the offscreen doc can pin getUserMedia's
+  // min/max width+height — without these, tabCapture letterboxes the stream
+  // to a default aspect and the output has black bars top+bottom.
+  await chrome.runtime.sendMessage({
+    type: 'rec-start-offscreen', streamId, format: opts.format,
+    width: tab?.width, height: tab?.height,
+  });
   log('rec-start-offscreen sent');
 }
 
 // A quick green "blip" — a soft glow hugging the viewport edges that fades in
 // and out, the way Claude tints the tab borders when it takes control. Just an
 // edge hue, no full-screen flash. Pointer-events:none so it never blocks the page.
-function blipRecordingIndicator(tabId) {
-  chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      const o = document.createElement('div');
-      o.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;box-shadow:inset 0 0 44px 10px rgba(57,211,83,.6);opacity:0;';
-      (document.body || document.documentElement).appendChild(o);
-      o.animate([{ opacity: 0 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], { duration: 650, easing: 'ease-out' })
-        .onfinish = () => o.remove();
-    },
-  }).catch((e) => console.error('[ViewShot] blip failed:', e));
+// Must be awaited and finish BEFORE MediaRecorder.start(), otherwise the blip
+// itself shows up in the first ~Ns of the recorded output (canonical Screenity
+// pattern: animate UI cue → wait for it to fade → start capture on clean DOM).
+const BLIP_ANIM_MS = 650;
+async function blipRecordingIndicator(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (animMs) => {
+        const o = document.createElement('div');
+        o.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;box-shadow:inset 0 0 44px 10px rgba(57,211,83,.6);opacity:0;';
+        (document.body || document.documentElement).appendChild(o);
+        o.animate([{ opacity: 0 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], { duration: animMs, easing: 'ease-out' })
+          .onfinish = () => o.remove();
+      },
+      args: [BLIP_ANIM_MS],
+    });
+  } catch (e) {
+    // chrome:// URLs and similar refuse executeScript — skip the wait so we
+    // don't delay the recording start for nothing.
+    console.error('[ViewShot] blip failed:', e);
+    return;
+  }
+  await new Promise((r) => setTimeout(r, BLIP_ANIM_MS + 50));
 }
 
 async function stopRecording() {
