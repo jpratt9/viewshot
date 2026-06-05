@@ -222,14 +222,41 @@ async function startRecording(streamId, opts) {
   // skip straight to recording — the badge + Chrome's own blue capture border
   // are still visible to the user as recording-active cues.
   if (tab) await blipRecordingIndicator(tab.id);
-  // Forward the tab's pixel dims so the offscreen doc can pin getUserMedia's
-  // min/max width+height — without these, tabCapture letterboxes the stream
-  // to a default aspect and the output has black bars top+bottom.
+  // Query the captured tab's ACTUAL viewport (innerWidth/innerHeight) — NOT
+  // chrome.tabs.Tab.width/height, which reports the outer window dims (tab
+  // strip + omnibox + bookmarks bar + status bar all included). tabCapture
+  // only captures the web-contents viewport, so pinning min/max to the outer
+  // window dims makes Chrome pad the difference with black (~150-200px bar
+  // at the bottom). innerWidth/innerHeight × devicePixelRatio gives the
+  // physical pixels that match what tabCapture actually delivers.
+  const dims = await getViewport(tab?.id);
   await chrome.runtime.sendMessage({
     type: 'rec-start-offscreen', streamId, format: opts.format,
-    width: tab?.width, height: tab?.height,
+    width: dims?.width, height: dims?.height,
   });
-  log('rec-start-offscreen sent');
+  log('rec-start-offscreen sent, dims=', dims);
+}
+
+// Get the captured tab's real viewport in PHYSICAL pixels (innerWidth/Height
+// × devicePixelRatio). This is what tabCapture actually streams — pinning
+// getUserMedia's min/max to these values eliminates both letterboxing AND the
+// bottom-padding-black-bar that comes from using outer window dims. Returns
+// null on chrome:// pages or any URL where executeScript can't inject.
+async function getViewport(tabId) {
+  if (!tabId) return null;
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({
+        width: Math.round(window.innerWidth * window.devicePixelRatio),
+        height: Math.round(window.innerHeight * window.devicePixelRatio),
+      }),
+    });
+    return result;
+  } catch (e) {
+    console.warn('[ViewShot] getViewport failed:', e);
+    return null;
+  }
 }
 
 // A quick green "blip" — a soft glow hugging the viewport edges that fades in
