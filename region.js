@@ -14,6 +14,7 @@
   document.documentElement.appendChild(sel);
 
   let sx = 0, sy = 0, dragging = false;
+  const clamp = (v, max) => Math.max(0, Math.min(v, max));
 
   const finish = (rect) => {
     overlay.remove();
@@ -26,6 +27,7 @@
   document.addEventListener('keydown', onKey, true);
 
   overlay.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return; // left button only; a right-click would leave a stale anchor
     dragging = true; sx = e.clientX; sy = e.clientY;
     sel.style.display = 'block';
     sel.style.left = sx + 'px'; sel.style.top = sy + 'px';
@@ -39,9 +41,16 @@
     sel.style.height = Math.abs(e.clientY - sy) + 'px';
   });
   overlay.addEventListener('mouseup', (e) => {
+    // Ignore a mouseup with no matching mousedown on the overlay (the drag began
+    // before injection finished). Without this, sx/sy are still 0,0 and the rect
+    // becomes the whole viewport-to-cursor area instead of what was selected.
+    if (!dragging) return;
     dragging = false;
-    const x = Math.min(sx, e.clientX), y = Math.min(sy, e.clientY);
-    const w = Math.abs(e.clientX - sx), h = Math.abs(e.clientY - sy);
+    // The overlay holds pointer capture during the drag, so clientX/Y can fall
+    // outside the viewport; clamp so the rect matches the visible selection.
+    const ex = clamp(e.clientX, window.innerWidth), ey = clamp(e.clientY, window.innerHeight);
+    const x = Math.min(sx, ex), y = Math.min(sy, ey);
+    const w = Math.abs(ex - sx), h = Math.abs(ey - sy);
     if (w < 5 || h < 5) { finish(null); return; }
     finish({ x, y, w, h, dpr });
   });
