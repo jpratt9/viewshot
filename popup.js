@@ -1,4 +1,4 @@
-const DEFAULTS = { format: 'png', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true };
+const DEFAULTS = { format: 'jpg', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true };
 const $ = (id) => document.getElementById(id);
 const isRecFmt = (f) => f === 'webm' || f === 'gif';
 let activeTab = null;
