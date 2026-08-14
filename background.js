@@ -61,17 +61,52 @@ async function encode(pngDataUrl, opts) {
   return { dataUrl: await blobToDataURL(blob), ext: opts.format };
 }
 
+// The document is not always what scrolls. `html,body{height:100%}` plus any
+// non-visible overflow (e.g. overflow-x:hidden, which forces overflow-y to
+// auto) pins <html> to the viewport height and makes <body> its own scroll
+// container. window.scrollTo() is then a silent no-op and window.scrollY
+// always reads 0, so the stitch captures one unmoved viewport over and over.
+// These two run in the page. executeScript serializes them standalone, so they
+// can't share a helper and each repeats the same three-line pick.
+function measurePage() {
+  const de = document.documentElement, b = document.body;
+  const el = de.scrollHeight > de.clientHeight + 1 ? de
+           : (b && b.scrollHeight > b.clientHeight + 1) ? b
+           : (document.scrollingElement || de);
+  return {
+    total: el.scrollHeight,
+    vh: window.innerHeight,
+    vw: window.innerWidth,
+    dpr: window.devicePixelRatio || 1,
+    prevY: el.scrollTop,
+  };
+}
+
+function scrollAndReport(to) {
+  const de = document.documentElement, b = document.body;
+  const el = de.scrollHeight > de.clientHeight + 1 ? de
+           : (b && b.scrollHeight > b.clientHeight + 1) ? b
+           : (document.scrollingElement || de);
+  el.scrollTop = to;
+  window.scrollTo(0, to); // no-op unless the document itself is the scroller
+  return el.scrollTop;
+}
+
+// Scroll to y and report where the page ACTUALLY landed. The caller stitches
+// at the returned offset rather than the requested one, so a page that clamps,
+// animates, or ignores the scroll still produces a correctly aligned image.
+async function scrollPageTo(tab, y) {
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id }, func: scrollAndReport, args: [y],
+  });
+  return result || 0;
+}
+
 // ---- full page: scroll the viewport and stitch ----
 async function captureFullPage(tab) {
   const [{ result: m }] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    func: () => ({
-      total: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0),
-      vh: window.innerHeight,
-      vw: window.innerWidth,
-      dpr: window.devicePixelRatio || 1,
-      prevY: window.scrollY,
-    }),
+    func: measurePage,
   });
 
   const canvas = new OffscreenCanvas(Math.round(m.vw * m.dpr), Math.round(m.total * m.dpr));
@@ -80,22 +115,34 @@ async function captureFullPage(tab) {
     Array.from({ length: Math.ceil(m.total / m.vh) }, (_, i) => Math.min(i * m.vh, Math.max(0, m.total - m.vh)))
   )];
 
-  let hid = false;
+  let hid = false, landed = 0;
   for (let i = 0; i < positions.length; i++) {
-    const pos = positions[i];
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: (y) => window.scrollTo(0, y), args: [pos] });
+    const actual = await scrollPageTo(tab, positions[i]);
+    // The page refused to advance (unscrollable, or a scroller we can't drive).
+    // Stop rather than stack the same viewport down the canvas.
+    if (i > 0 && actual <= landed) break;
+    landed = actual;
     // Keep fixed/sticky elements (pinned headers, banners) on the FIRST slice
     // only; hide them on later slices so they aren't stitched in repeatedly.
     if (i === 1 && !hid) { await setFixedHidden(tab, true); hid = true; }
     await sleep(500); // settle + respect captureVisibleTab's ~2/sec rate limit
     const url = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     const bmp = await createImageBitmap(await (await fetch(url)).blob());
-    ctx.drawImage(bmp, 0, Math.round(pos * m.dpr));
+    ctx.drawImage(bmp, 0, Math.round(actual * m.dpr)); // where it really is, not where we asked
   }
 
   if (hid) await setFixedHidden(tab, false); // restore
-  await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: (y) => window.scrollTo(0, y), args: [m.prevY] });
-  return await blobToDataURL(await canvas.convertToBlob({ type: 'image/png' }));
+  await scrollPageTo(tab, m.prevY);
+
+  // Trim to what was actually stitched, so an early stop yields a short correct
+  // image instead of a tall one padded with blank space.
+  const filled = Math.min(canvas.height, Math.round((landed + m.vh) * m.dpr));
+  let out = canvas;
+  if (filled > 0 && filled < canvas.height) {
+    out = new OffscreenCanvas(canvas.width, filled);
+    out.getContext('2d').drawImage(canvas, 0, 0);
+  }
+  return await blobToDataURL(await out.convertToBlob({ type: 'image/png' }));
 }
 
 // Temporarily hide position:fixed / position:sticky elements (the cause of
