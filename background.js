@@ -225,8 +225,9 @@ async function ensureOffscreen() {
       justification: 'Write screenshots to the clipboard and record the tab to video',
     });
   }
-  await offscreenCreating;
-  offscreenCreating = null;
+  // finally, not a bare assignment: a rejected createDocument would otherwise
+  // stay cached here and every later call would re-await the same rejection.
+  try { await offscreenCreating; } finally { offscreenCreating = null; }
   // createDocument can resolve just before the page's message listener is live,
   // so the first rec-start would be dropped. Ping until it answers (the cause
   // of the "press record twice to start" bug).
@@ -237,10 +238,31 @@ async function ensureOffscreen() {
   console.log('[ViewShot] offscreen document ready');
 }
 
+// An offscreen document shares its renderer process — and therefore its Blink
+// main thread — with the action popup, and only AUDIO_PLAYBACK documents ever
+// expire on their own. Leaving one open means every popup open competes with
+// whatever that document is doing, and Chrome does not paint the popup until
+// its onload completes. So close it the moment the work is finished.
+async function closeOffscreen() {
+  const { rec } = await chrome.storage.local.get('rec');
+  if (rec) return; // a recording lives in there; closing would kill it
+  try {
+    if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
+  } catch (e) {
+    console.warn('[ViewShot] closeDocument failed:', e);
+  }
+}
+
 // ---- clipboard via the offscreen document ----
 async function copyImage(pngDataUrl) {
   await ensureOffscreen();
-  await chrome.runtime.sendMessage({ type: 'shot-clipboard', dataUrl: pngDataUrl });
+  // The offscreen listener answers only after the clipboard write resolves, so
+  // awaiting here means it is safe to tear the document down straight after.
+  try {
+    await chrome.runtime.sendMessage({ type: 'shot-clipboard', dataUrl: pngDataUrl });
+  } finally {
+    await closeOffscreen();
+  }
 }
 
 // ---- record the visible tab to WebM/GIF via the offscreen document ----

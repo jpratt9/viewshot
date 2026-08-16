@@ -5,7 +5,10 @@ log('offscreen loaded, GIF available =', typeof GIF !== 'undefined');
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === 'offscreen-ping') { sendResponse('pong'); return; }
-  if (msg?.type === 'shot-clipboard') copyToClipboard(msg.dataUrl);
+  // Answered so the worker can close this document once the write is done —
+  // an offscreen document shares its renderer main thread with the popup, and
+  // Chrome won't paint the popup until that thread lets its onload finish.
+  if (msg?.type === 'shot-clipboard') { copyToClipboard(msg.dataUrl).then(() => sendResponse('done')); return true; }
   else if (msg?.type === 'rec-start-offscreen') { log('rec-start-offscreen, format=', msg.format, 'dims=', msg.width, 'x', msg.height); startRecording(msg.streamId, msg.format, msg.width, msg.height).catch(onRecError); }
   else if (msg?.type === 'rec-stop-offscreen') { log('rec-stop-offscreen, filename=', msg.filename); stopRecording(msg.filename); }
 });
@@ -41,6 +44,12 @@ async function startRecording(streamId, format, width, height) {
   const stream = await navigator.mediaDevices.getUserMedia({ video: { mandatory } });
   log('got MediaStream, video tracks:', stream.getVideoTracks().length);
   rec = { stream, format };
+  // Chrome's own "Stop sharing" bar (and closing the captured tab) ends the
+  // track without telling us. Route it through the normal stop path so the
+  // file is still written, the badge clears, and nothing keeps ticking.
+  stream.getVideoTracks().forEach((t) => {
+    t.addEventListener('ended', () => chrome.runtime.sendMessage({ type: 'rec-stop' }));
+  });
 
   if (format === 'gif') {
     const video = document.createElement('video');
@@ -61,9 +70,16 @@ async function startRecording(streamId, format, width, height) {
     rec.gif = new GIF({ workers: 2, quality: 10, width: w, height: h, workerScript: chrome.runtime.getURL('gif.worker.js') });
     rec.frames = 0;
     const delay = Math.round(1000 / GIF_FPS);
-    rec.timer = setInterval(() => {
+    // Held locally as well as on `rec` so the tick can always cancel itself,
+    // even once `rec` has been nulled out from under it.
+    const timer = setInterval(() => {
+      // The error path nulls `rec` without clearing this interval. Without the
+      // guard the tick throws every 100ms forever, saturating the main thread
+      // this document shares with the popup — and Chrome will not paint the
+      // popup until that thread lets its onload complete.
+      if (!rec || !rec.gif) { clearInterval(timer); return; }
       if (rec.frames >= GIF_MAX_FRAMES) {
-        clearInterval(rec.timer); rec.timer = null;
+        clearInterval(timer); rec.timer = null;
         console.warn('[ViewShot] GIF frame cap reached, auto-stopping');
         // Run the same end-to-end stop path the Stop button uses — background
         // will compute the filename, set the MAX badge, and send us the
@@ -75,6 +91,7 @@ async function startRecording(streamId, format, width, height) {
       rec.gif.addFrame(ctx, { copy: true, delay });
       rec.frames++;
     }, delay);
+    rec.timer = timer;
   } else {
     rec.chunks = [];
     const mime = pickWebmMime();
@@ -131,8 +148,18 @@ function download(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
+// Release everything this document holds. The frame timer and the capture
+// stream both keep working otherwise, and this document's main thread is the
+// popup's main thread.
+function teardown() {
+  if (!rec) return;
+  if (rec.timer) clearInterval(rec.timer);
+  try { rec.stream.getTracks().forEach((t) => t.stop()); } catch {}
+  rec = null;
+}
+
 function onRecError(e) {
   console.error('[ViewShot] recording failed:', e);
-  rec = null;
+  teardown();
   chrome.runtime.sendMessage({ type: 'rec-failed' });
 }
