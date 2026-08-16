@@ -5,11 +5,7 @@ let activeTab = null;
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
 
-async function load() {
-  [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const { opts } = await chrome.storage.local.get('opts');
-  const o = { ...DEFAULTS, ...(opts || {}) };
-  if (o.filename === 'shot-{date}') o.filename = DEFAULTS.filename; // migrate old default
+function apply(o) {
   $('format').value = o.format;
   $('quality').value = o.quality;
   $('qualityVal').textContent = Math.round(o.quality * 100) + '%';
@@ -18,10 +14,32 @@ async function load() {
   $('hideScrollbar').checked = o.hideScrollbar;
   toggleQuality();
   toggleRec();
+}
 
+const migrate = (o) => (o.filename === 'shot-{date}' ? { ...o, filename: DEFAULTS.filename } : o);
+
+// Chrome will not paint the popup until its onload completes, so every awaited
+// round trip before first paint is lag the user sees. localStorage is
+// synchronous and lives in this document, so the form is filled in before the
+// first frame; chrome.storage stays the source of truth and reconciles below.
+function paintFromCache() {
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem('opts') || 'null'); } catch { /* no mirror yet */ }
+  apply(migrate({ ...DEFAULTS, ...(cached || {}) }));
+}
+
+async function load() {
+  // In parallel, and one storage call rather than two: these used to be three
+  // sequential IPC round trips, with the form gated behind a tabs.query it did
+  // not need.
+  const [tabs, stored] = await Promise.all([
+    chrome.tabs.query({ active: true, currentWindow: true }),
+    chrome.storage.local.get(['opts', 'rec']),
+  ]);
+  [activeTab] = tabs;
+  apply(migrate({ ...DEFAULTS, ...(stored.opts || {}) }));
   // The Stop button stays greyed out unless a recording is actually running.
-  const { rec } = await chrome.storage.local.get('rec');
-  $('stopBtn').disabled = !rec;
+  $('stopBtn').disabled = !stored.rec;
 }
 
 function read() {
@@ -34,7 +52,11 @@ function read() {
   };
 }
 
-const save = () => chrome.storage.local.set({ opts: read() });
+const save = () => {
+  const o = read();
+  try { localStorage.setItem('opts', JSON.stringify(o)); } catch { /* mirror is best-effort */ }
+  return chrome.storage.local.set({ opts: o });
+};
 // Quality slider only applies to the still image formats jpg/webp.
 const toggleQuality = () => { $('qualityRow').style.display = (['jpg', 'webp'].includes($('format').value)) ? 'flex' : 'none'; };
 
@@ -84,4 +106,5 @@ $('toClipboard').addEventListener('change', save);
 $('hideScrollbar').addEventListener('change', save);
 $('shortcuts').addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }); });
 
-load();
+paintFromCache(); // synchronous: correct UI in the first frame
+load();           // then reconcile with chrome.storage + the active tab

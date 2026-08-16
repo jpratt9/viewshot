@@ -34,8 +34,12 @@ function makeEl() {
   return el;
 }
 
-async function loadPopup(store = {}) {
+// Boots popup.js WITHOUT letting its async load() settle, so assertions can see
+// exactly what the first painted frame contained.
+function bootPopup(store = {}, cache = null) {
   const els = {};
+  const storageGets = [];
+  const mirror = { value: cache === null ? null : JSON.stringify(cache) };
   const document = {
     getElementById: (id) => (els[id] = els[id] || makeEl()),
     querySelector: () => makeEl(),
@@ -45,18 +49,40 @@ async function loadPopup(store = {}) {
     tabs: { query: async () => [{ id: 1, url: 'https://a.com', title: 'T' }], create: () => {} },
     storage: {
       local: {
-        get: async (k) => (k in store ? { [k]: store[k] } : {}),
+        // chrome.storage.local.get accepts a key or an array of keys.
+        // chrome.storage.local.get accepts a key or an array of keys.
+        get: async (k) => {
+          storageGets.push(Array.isArray(k) ? [...k] : k); // copy out of the vm realm
+          const out = {};
+          for (const key of (Array.isArray(k) ? k : [k])) if (key in store) out[key] = store[key];
+          return out;
+        },
         set: async (o) => Object.assign(store, o),
       },
     },
     runtime: { sendMessage: () => {} },
     tabCapture: { getMediaStreamId: async () => 'sid' },
   };
-  const context = { document, chrome, console, Math, parseFloat };
+  const localStorage = {
+    getItem: (k) => (k === 'opts' ? mirror.value : null),
+    setItem: (k, v) => { if (k === 'opts') mirror.value = v; },
+  };
+  const context = { document, chrome, console, Math, parseFloat, JSON, localStorage };
   vm.createContext(context);
   vm.runInContext(read('popup.js'), context);
-  await new Promise((r) => setImmediate(r)); // let the top-level load() settle
-  return { ...context, els, store, DEFAULTS: { ...vm.runInContext('DEFAULTS', context) } };
+  return {
+    ...context, els, store, mirror, storageGets,
+    // const/let live in the context's lexical scope, not on the context object.
+    DEFAULTS: { ...vm.runInContext('DEFAULTS', context) },
+    save: vm.runInContext('save', context),
+    settle: () => new Promise((r) => setImmediate(r)),
+  };
+}
+
+async function loadPopup(store = {}, cache = null) {
+  const p = bootPopup(store, cache);
+  await p.settle(); // let the top-level load() finish reconciling
+  return p;
 }
 
 // Still-image formats offered in the UI, straight from the markup so the test
@@ -69,6 +95,7 @@ function stillFormatsFromMarkup() {
 }
 
 const bg = loadBackground();
+const DEFAULT_NAME = bg.DEFAULTS.filename;
 
 // --- the duplication guard -------------------------------------------------
 // DEFAULTS is declared identically in background.js and popup.js (the worker is
@@ -125,4 +152,54 @@ test('the quality row is visible for the lossy default format', async () => {
 test('the quality row stays hidden for png', async () => {
   const popup = await loadPopup({ opts: { format: 'png' } });
   assert.strictEqual(popup.els.qualityRow.style.display, 'none');
+});
+
+// --- first paint must not wait on any async round trip ----------------------
+// Chrome does not show the popup until its onload completes, so anything the
+// UI awaits before painting is lag the user sees on every single click.
+
+test('paints the form before any async work settles', () => {
+  const popup = bootPopup({ opts: { format: 'webp' } }, { format: 'webp', quality: 0.5, filename: 'x', toClipboard: true, hideScrollbar: false });
+  // No settle() — this is the first frame.
+  assert.strictEqual(popup.els.format.value, 'webp');
+  assert.strictEqual(popup.els.filename.value, 'x');
+  assert.strictEqual(popup.els.toClipboard.checked, true);
+});
+
+test('falls back to defaults in the first frame when no cache exists', () => {
+  const popup = bootPopup({}, null);
+  assert.strictEqual(popup.els.format.value, 'jpg');
+  assert.strictEqual(popup.els.filename.value, DEFAULT_NAME);
+});
+
+test('a corrupt cache does not break the first paint', () => {
+  const popup = bootPopup({});
+  popup.mirror.value = '{not json';
+  const again = bootPopup({});
+  again.mirror.value = '{not json';
+  assert.strictEqual(again.els.format.value, 'jpg', 'falls back to defaults rather than throwing');
+});
+
+test('mirrors settings to the synchronous cache on save', async () => {
+  const popup = await loadPopup({ opts: { format: 'webp' } });
+  popup.els.filename.value = 'renamed';
+  popup.els.quality.value = '0.8';
+  popup.save();
+  assert.strictEqual(JSON.parse(popup.mirror.value).filename, 'renamed');
+});
+
+test('reads storage once, not once per key', async () => {
+  const popup = await loadPopup({ opts: { format: 'png' }, rec: null });
+  assert.strictEqual(popup.storageGets.length, 1, 'opts and rec must come from a single round trip');
+  assert.deepStrictEqual(popup.storageGets[0], ['opts', 'rec']);
+});
+
+test('chrome.storage wins over a stale cache once it resolves', async () => {
+  const popup = await loadPopup({ opts: { format: 'png' } }, { format: 'webp' });
+  assert.strictEqual(popup.els.format.value, 'png', 'cache is a paint hint, storage is the truth');
+});
+
+test('still migrates the old filename default through the cache path', () => {
+  const popup = bootPopup({}, { format: 'jpg', filename: 'shot-{date}' });
+  assert.strictEqual(popup.els.filename.value, DEFAULT_NAME);
 });
