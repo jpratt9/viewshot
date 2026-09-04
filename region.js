@@ -16,15 +16,30 @@
   let sx = 0, sy = 0, dragging = false;
   const clamp = (v, max) => Math.max(0, Math.min(v, max));
 
-  const finish = (rect) => {
+  const teardown = () => {
     overlay.remove();
     sel.remove();
     window.__shotRegion = false;
+    window.__shotRegionCancel = null;
     document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('blur', onBlur);
+  };
+  const finish = (rect) => {
+    teardown();
     chrome.runtime.sendMessage({ type: 'shot-region', rect });
   };
   const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); finish(null); } };
+  // Focus leaving the page means the selection was abandoned - the toolbar icon
+  // was clicked, or another tab/window took over. Without this the dimming sits
+  // on the page indefinitely and gets baked into the next capture. A drag that
+  // runs past the window edge keeps pointer capture, so never cancel mid-drag.
+  const onBlur = () => { if (!dragging) finish(null); };
   document.addEventListener('keydown', onKey, true);
+  window.addEventListener('blur', onBlur);
+  // Lets the worker clear a stale overlay before the next capture. Silent on
+  // purpose: a shot-region message here could land after the next selection's
+  // listener is installed and cancel that one instead.
+  window.__shotRegionCancel = teardown;
 
   overlay.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return; // left button only; a right-click would leave a stale anchor

@@ -24,7 +24,16 @@ function loadRegion(opts = {}) {
   const created = [];
   const sent = [];
   const docListeners = {};
-  const window = { __shotRegion: alreadyActive, devicePixelRatio: dpr, innerWidth, innerHeight };
+  const winListeners = {};
+  const window = {
+    __shotRegion: alreadyActive, devicePixelRatio: dpr, innerWidth, innerHeight,
+    addEventListener(type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); },
+    removeEventListener(type, fn) {
+      const l = winListeners[type] || [];
+      const i = l.indexOf(fn);
+      if (i !== -1) l.splice(i, 1);
+    },
+  };
   const document = {
     documentElement: { appendChild() {} },
     createElement() { const el = makeEl(); created.push(el); return el; },
@@ -44,7 +53,7 @@ function loadRegion(opts = {}) {
   vm.createContext(context);
   vm.runInContext(CODE, context);
 
-  return { overlay: created[0], sel: created[1], sent, window, docListeners, created };
+  return { overlay: created[0], sel: created[1], sent, window, docListeners, winListeners, created };
 }
 
 const fire = (el, type, ev) => (el.listeners[type] || []).forEach((fn) => fn(ev));
@@ -161,4 +170,44 @@ test('falls back to dpr 1 when devicePixelRatio is unset', () => {
   fire(overlay, 'mousedown', down(10, 10));
   fire(overlay, 'mouseup', up(110, 110));
   assert.strictEqual(sent[0].rect.dpr, 1);
+});
+
+// --- abandoning a selection -----------------------------------------------
+// Clicking Region and then walking away used to leave the dimmed overlay on the
+// page forever: it stayed through a Visible/Full page capture and got baked in.
+
+test('losing page focus cancels an idle selection', () => {
+  const { sent, overlay, sel, window, winListeners } = loadRegion();
+  winListeners.blur[0]();
+  assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: null }]);
+  assert.strictEqual(overlay.removed, true);
+  assert.strictEqual(sel.removed, true);
+  assert.strictEqual(window.__shotRegion, false);
+});
+
+test('losing focus mid-drag does not cancel', () => {
+  const { overlay, sent, winListeners } = loadRegion({ dpr: 1 });
+  fire(overlay, 'mousedown', down(100, 100));
+  winListeners.blur[0](); // dragging past the window edge blurs on some platforms
+  fire(overlay, 'mouseup', up(300, 300));
+  assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: { x: 100, y: 100, w: 200, h: 200, dpr: 1 } }]);
+});
+
+test('the worker can tear the overlay down without sending a rect', () => {
+  const { overlay, sel, window, sent } = loadRegion();
+  window.__shotRegionCancel();
+  assert.strictEqual(overlay.removed, true);
+  assert.strictEqual(sel.removed, true);
+  assert.strictEqual(window.__shotRegion, false);
+  // A shot-region here would resolve the NEXT capture's listener as a cancel.
+  assert.deepStrictEqual(sent, [], 'silent teardown must not message the worker');
+});
+
+test('a cancelled overlay releases its listeners and its re-injection guard', () => {
+  const { window, docListeners, winListeners } = loadRegion();
+  window.__shotRegionCancel();
+  assert.deepStrictEqual(docListeners.keydown, []);
+  assert.deepStrictEqual(winListeners.blur, []);
+  assert.strictEqual(window.__shotRegionCancel, null);
+  assert.strictEqual(window.__shotRegion, false, 'a fresh injection must be able to mount');
 });

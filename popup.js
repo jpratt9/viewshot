@@ -92,6 +92,10 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
     } else {
       await save();
       chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, opts });
+      // Region hands the page over to a drag. Left open, the popup covers the
+      // dimmed overlay, holds the focus its Escape-to-cancel needs, and makes
+      // the dimming look like a bug rather than a live selection.
+      if (btn.dataset.mode === 'region') window.close();
     }
   });
 });

@@ -29,6 +29,7 @@ async function getActiveTab() {
 async function runCapture(mode, opts) {
   const tab = await getActiveTab();
   if (!tab) return;
+  await cancelRegion(tab); // an abandoned overlay would otherwise dim this shot
   let png;
   if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
   try {
@@ -192,12 +193,35 @@ async function setScrollbarHidden(tab, hide) {
 }
 
 // ---- region: overlay drag-select, then crop the visible capture ----
+
+// Resolve of the selection currently awaiting a drag, if any.
+let cancelPendingRegion = null;
+
+// Clicking Region and then walking away leaves the dimmed overlay on the page:
+// it would be stitched into the next Visible/Full page shot, and a second
+// Region click would no-op against its re-entrancy guard. Tear it down first.
+// The page-side teardown sends no message (see region.js), so the abandoned
+// promise is settled here instead of racing the next capture's listener.
+async function cancelRegion(tab) {
+  cancelPendingRegion?.(null);
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => { if (window.__shotRegionCancel) window.__shotRegionCancel(); },
+    });
+  } catch { /* chrome:// and friends refuse injection, and hold no overlay */ }
+}
+
 async function captureRegion(tab) {
   const resultP = new Promise((resolve) => {
-    const onMsg = (msg) => {
-      if (msg?.type === 'shot-region') { chrome.runtime.onMessage.removeListener(onMsg); resolve(msg.rect); }
+    const done = (rect) => {
+      chrome.runtime.onMessage.removeListener(onMsg);
+      cancelPendingRegion = null;
+      resolve(rect);
     };
+    const onMsg = (msg) => { if (msg?.type === 'shot-region') done(msg.rect); };
     chrome.runtime.onMessage.addListener(onMsg);
+    cancelPendingRegion = done;
   });
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['region.js'] });
   const rect = await resultP;

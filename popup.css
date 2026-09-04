@@ -1,9 +1,15 @@
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
+/* <body>'s background propagates to the whole popup canvas while <html> has
+   none of its own, so a radius on body was being filled in square behind it.
+   A background-image that paints nothing stops the propagation (background-color
+   can't: `transparent` still counts as none), leaving the corners clear. */
+html { background-image: linear-gradient(#0000, #0000); }
 body {
   width: 268px; margin: 0; padding: 12px;
   font: 13px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   background: #161616; color: #e6e6e6;
+  border-radius: 12px;
 }
 .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
 .mode {
