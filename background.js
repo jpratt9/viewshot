@@ -1,8 +1,14 @@
 const DEFAULTS = { format: 'jpg', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.type === 'capture') runCapture(msg.mode, msg.opts).catch((e) => console.error('[ViewShot]', e));
+// The `capture` branch answers synchronously, before it starts any work. The
+// popup closes itself on Region, and a sendMessage whose sender is torn down in
+// the same turn is dropped while the worker is cold-starting - the wake is
+// still in flight when the frame goes away, so the capture never runs at all. A
+// warm worker wins that race, which is why it only failed sometimes: the
+// "press Region twice" bug. The popup awaits this ack before window.close().
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === 'capture') { sendResponse(true); runCapture(msg.mode, msg.opts).catch((e) => console.error('[ViewShot]', e)); }
   else if (msg?.type === 'rec-start') startRecording(msg.streamId, msg.opts).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-cap-hit') stopRecording().then(() => flashBadge('MAX')).catch((e) => console.error('[ViewShot]', e));

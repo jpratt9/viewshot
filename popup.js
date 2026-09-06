@@ -91,7 +91,18 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
       $('stopBtn').disabled = false; // popup stays open, so reflect the live recording
     } else {
       await save();
-      chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, opts });
+      // Wait for the worker to acknowledge before closing anything. window.close()
+      // in the same turn as the send tears this frame down while a cold-starting
+      // worker is still waking, and the message goes with it - the click did
+      // nothing at all, and pressing Region again worked only because the second
+      // press met a worker that was already awake.
+      try {
+        await chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, opts });
+      } catch (e) {
+        console.error('[ViewShot] capture message failed:', e);
+        showError('Couldn’t reach the extension worker. Try again.');
+        return; // keep the popup open so the error is visible
+      }
       // Region hands the page over to a drag. Left open, the popup covers the
       // dimmed overlay, holds the focus its Escape-to-cancel needs, and makes
       // the dimming look like a bug rather than a live selection.
