@@ -5,6 +5,13 @@ let activeTab = null;
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
 
+// chrome://, extension pages, devtools and the New Tab page refuse both
+// executeScript and captureVisibleTab, so every mode fails on them - the worker
+// threw "Cannot access a chrome:// URL" into a console the user never has open.
+// activeTab is null until load() resolves; the worker's badge covers that gap.
+const CAPTURABLE = /^(https?|file|ftp):/i;
+const uncapturable = (tab) => !!(tab && tab.url && !CAPTURABLE.test(tab.url));
+
 function apply(o) {
   $('format').value = o.format;
   $('quality').value = o.quality;
@@ -73,6 +80,10 @@ function toggleRec() {
 document.querySelectorAll('#modes .mode').forEach((btn) => {
   btn.addEventListener('click', async () => {
     if (btn.disabled) return;
+    if (uncapturable(activeTab)) {
+      showError('Can’t capture this page. Open a normal http(s) page (not chrome://, the Web Store, or a new tab) and try again.');
+      return; // keep the popup open so the error is visible
+    }
     const opts = read();
     if (isRecFmt(opts.format)) {
       // Mint the capture stream id HERE, while the click's user gesture is still

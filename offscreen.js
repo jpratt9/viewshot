@@ -93,11 +93,16 @@ async function startRecording(streamId, format, width, height) {
     }, delay);
     rec.timer = timer;
   } else {
-    rec.chunks = [];
+    // Close over the array, not over `rec`. stop() nulls `rec` synchronously
+    // while MediaRecorder still owes one final dataavailable on a later task,
+    // so reading rec.chunks here threw "Cannot read properties of null" and
+    // dropped the last second of every recording on the floor.
+    const chunks = [];
+    rec.chunks = chunks;
     const mime = pickWebmMime();
     log('starting MediaRecorder, mime=', mime);
     rec.recorder = new MediaRecorder(stream, { mimeType: mime });
-    rec.recorder.ondataavailable = (e) => { if (e.data.size) rec.chunks.push(e.data); };
+    rec.recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     // Timeslice → periodic dataavailable. Survives an offscreen-doc eviction
     // mid-recording (MV3 may tear it down); without this, a crash loses
     // everything because the only flush is at stop().

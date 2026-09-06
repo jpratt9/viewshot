@@ -8,7 +8,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // warm worker wins that race, which is why it only failed sometimes: the
 // "press Region twice" bug. The popup awaits this ack before window.close().
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === 'capture') { sendResponse(true); runCapture(msg.mode, msg.opts).catch((e) => console.error('[ViewShot]', e)); }
+  if (msg?.type === 'capture') { sendResponse(true); runCapture(msg.mode, msg.opts).catch(captureFailed); }
   else if (msg?.type === 'rec-start') startRecording(msg.streamId, msg.opts).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-cap-hit') stopRecording().then(() => flashBadge('MAX')).catch((e) => console.error('[ViewShot]', e));
@@ -17,7 +17,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 chrome.commands.onCommand.addListener(async (cmd) => {
   const map = { 'capture-visible': 'visible', 'capture-fullpage': 'fullpage', 'capture-region': 'region' };
-  if (map[cmd]) runCapture(map[cmd], await getOpts()).catch((e) => console.error('[ViewShot]', e));
+  if (map[cmd]) runCapture(map[cmd], await getOpts()).catch(captureFailed);
 });
 
 async function getOpts() {
@@ -32,6 +32,43 @@ async function getActiveTab() {
   return tab;
 }
 
+// chrome.tabs.captureVisibleTab is capped at MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND
+// (2/sec, extension-wide) and rejects rather than queueing when it is exceeded.
+// Back-to-back shots land inside that window constantly - a double press, a
+// Region right after a Visible, the first slice of a stitch following an
+// earlier capture - so every call goes through this gate: one at a time, spaced
+// out, and retried once if it still comes back over quota.
+const CAPTURE_MIN_GAP_MS = 550;
+let captureGate = Promise.resolve();
+let lastCaptureAt = 0;
+
+function captureVisible(windowId) {
+  const shot = captureGate.then(async () => {
+    const wait = CAPTURE_MIN_GAP_MS - (Date.now() - lastCaptureAt);
+    if (wait > 0) await sleep(wait);
+    try {
+      return await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+    } catch (e) {
+      if (!/quota/i.test(e?.message || '')) throw e;
+      await sleep(CAPTURE_MIN_GAP_MS);
+      return await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+    } finally {
+      lastCaptureAt = Date.now();
+    }
+  });
+  captureGate = shot.catch(() => {}); // one caller's failure must not stall the next
+  return shot;
+}
+
+// A capture has no UI thread to report into: the popup has closed on Region and
+// never existed for the keyboard shortcuts. So a failure flashes the badge -
+// silence was indistinguishable from a capture that simply did nothing, which
+// is what "Cannot access a chrome:// URL" looked like from the outside.
+function captureFailed(e) {
+  console.error('[ViewShot]', e);
+  flashBadge('!').catch(() => {});
+}
+
 async function runCapture(mode, opts) {
   const tab = await getActiveTab();
   if (!tab) return;
@@ -39,7 +76,7 @@ async function runCapture(mode, opts) {
   let png;
   if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
   try {
-    if (mode === 'visible') png = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    if (mode === 'visible') png = await captureVisible(tab.windowId);
     else if (mode === 'fullpage') png = await captureFullPage(tab);
     else if (mode === 'region') png = await captureRegion(tab);
   } finally {
@@ -132,8 +169,8 @@ async function captureFullPage(tab) {
     // Keep fixed/sticky elements (pinned headers, banners) on the FIRST slice
     // only; hide them on later slices so they aren't stitched in repeatedly.
     if (i === 1 && !hid) { await setFixedHidden(tab, true); hid = true; }
-    await sleep(500); // settle + respect captureVisibleTab's ~2/sec rate limit
-    const url = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
+    const url = await captureVisible(tab.windowId);
     const bmp = await createImageBitmap(await (await fetch(url)).blob());
     ctx.drawImage(bmp, 0, Math.round(actual * m.dpr)); // where it really is, not where we asked
   }
@@ -178,24 +215,29 @@ async function setFixedHidden(tab, hide) {
 // Uses a removable <style> rather than overflow:hidden so scrolling still
 // works (the full-page mode relies on scrolling to stitch slices).
 async function setScrollbarHidden(tab, hide) {
-  await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: (doHide) => {
-      const ID = '__shotHideScrollbar';
-      const existing = document.getElementById(ID);
-      if (doHide) {
-        if (existing) return;
-        const style = document.createElement('style');
-        style.id = ID;
-        style.textContent =
-          '::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}html{scrollbar-width:none!important}';
-        (document.head || document.documentElement).appendChild(style);
-      } else if (existing) {
-        existing.remove();
-      }
-    },
-    args: [hide],
-  });
+  // Cosmetic, so an uninjectable page must not be where the capture dies: on a
+  // chrome:// URL this threw "Cannot access a chrome:// URL" before the shutter
+  // was ever reached, and such pages show no page scrollbar to hide anyway.
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (doHide) => {
+        const ID = '__shotHideScrollbar';
+        const existing = document.getElementById(ID);
+        if (doHide) {
+          if (existing) return;
+          const style = document.createElement('style');
+          style.id = ID;
+          style.textContent =
+            '::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}html{scrollbar-width:none!important}';
+          (document.head || document.documentElement).appendChild(style);
+        } else if (existing) {
+          existing.remove();
+        }
+      },
+      args: [hide],
+    });
+  } catch { /* chrome:// and friends refuse injection */ }
 }
 
 // ---- region: overlay drag-select, then crop the visible capture ----
@@ -234,7 +276,7 @@ async function captureRegion(tab) {
   if (!rect) return null;
 
   await sleep(80); // let the overlay clear before capturing
-  const bmp = await createImageBitmap(await (await fetch(await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' }))).blob());
+  const bmp = await createImageBitmap(await (await fetch(await captureVisible(tab.windowId))).blob());
   const d = rect.dpr;
   const canvas = new OffscreenCanvas(Math.round(rect.w * d), Math.round(rect.h * d));
   const ctx = canvas.getContext('2d');

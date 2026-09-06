@@ -1,0 +1,283 @@
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const read = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
+const PNG = 'data:image/png;base64,AAAA';
+const TAB = { id: 7, windowId: 1, url: 'https://a.com', title: 'T' };
+const settle = () => new Promise((r) => setImmediate(r));
+
+// Three unrelated errors showed up in chrome://extensions at once, and each one
+// had the same shape: a real failure that reached the console and nothing else.
+//   - MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND, from two shots inside one second
+//   - "Cannot access a chrome:// URL", from a capture on a chrome:// page
+//   - "Cannot read properties of null (reading 'chunks')", from the recorder's
+//     final flush landing after stop() had already nulled `rec`
+
+// background.js against a fake browser. `clock` stands in for Date.now so the
+// rate-limit gate can be driven without real waiting; sleeps advance it.
+function loadBg({ captureFails = null, scriptFails = false } = {}) {
+  const shots = [];
+  const badges = [];
+  const sleeps = [];
+  let now = 100000;
+
+  class FakeCanvas {
+    constructor(w, h) { this.width = w; this.height = h; }
+    getContext() { return { drawImage() {}, fillStyle: '', fillRect() {} }; }
+    async convertToBlob() { return { type: 'image/png', arrayBuffer: async () => new Uint8Array([1]).buffer }; }
+  }
+
+  const chrome = {
+    runtime: { onMessage: { addListener() {}, removeListener() {} }, sendMessage: async () => {} },
+    commands: { onCommand: { addListener() {} } },
+    tabs: {
+      query: async () => [TAB],
+      captureVisibleTab: async () => {
+        shots.push(now);
+        const e = captureFails && captureFails(shots.length);
+        if (e) throw new Error(e);
+        return PNG;
+      },
+    },
+    scripting: {
+      executeScript: async (o) => {
+        if (scriptFails) throw new Error('Cannot access a chrome:// URL');
+        return [{ result: o.func ? o.func.apply(null, o.args || []) : undefined }];
+      },
+    },
+    downloads: { download: async () => {} },
+    storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
+    action: {
+      setBadgeText: async ({ text }) => { if (text) badges.push(text); },
+      setBadgeBackgroundColor: async () => {},
+    },
+  };
+
+  const context = {
+    chrome, console: { ...console, error: () => {}, warn: () => {}, log: () => {} },
+    URL, btoa, clearTimeout,
+    // Sleeps are the thing under test here, so record them and move the clock
+    // rather than actually waiting.
+    setTimeout: (fn, ms) => { sleeps.push(ms || 0); now += ms || 0; fn(); },
+    // buildName still needs a real Date; only now() is under our control.
+    Date: class extends Date { static now() { return now; } },
+    window: {},
+    document: { getElementById: () => null, head: null, documentElement: { appendChild() {} }, createElement: () => ({ style: {} }) },
+    OffscreenCanvas: FakeCanvas,
+    createImageBitmap: async () => ({ width: 100, height: 100 }),
+    fetch: async () => ({ blob: async () => ({}) }),
+  };
+  vm.createContext(context);
+  vm.runInContext(read('background.js'), context);
+  return { ctx: context, shots, badges, sleeps, tick: (ms) => { now += ms; } };
+}
+
+const OPTS = { format: 'png', quality: 1, filename: 'x', toClipboard: false, hideScrollbar: true };
+
+// --- MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND -------------------------------
+// captureVisibleTab allows 2 calls/sec extension-wide and rejects instead of
+// queueing. Two quick shots, or a Region straight after a Visible, blew past it.
+
+test('spaces consecutive captures out past the per-second quota', async () => {
+  const bg = loadBg();
+  await bg.ctx.runCapture('visible', OPTS);
+  await bg.ctx.runCapture('visible', OPTS);
+  assert.strictEqual(bg.shots.length, 2);
+  assert.ok(bg.shots[1] - bg.shots[0] >= 500,
+    `only ${bg.shots[1] - bg.shots[0]}ms apart, which is inside the 2/sec quota`);
+});
+
+test('does not delay a capture that already stands alone', async () => {
+  const bg = loadBg();
+  await bg.ctx.runCapture('visible', OPTS);
+  bg.tick(5000); // plenty of idle time since the last shot
+  const before = bg.sleeps.length;
+  await bg.ctx.runCapture('visible', OPTS);
+  assert.ok(!bg.sleeps.slice(before).some((ms) => ms >= 500),
+    'waited out a gap that had already elapsed');
+});
+
+test('retries once when the quota is hit anyway', async () => {
+  const bg = loadBg({ captureFails: (n) => (n === 1 ? 'This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.' : null) });
+  await bg.ctx.runCapture('visible', OPTS);
+  assert.strictEqual(bg.shots.length, 2, 'the quota rejection should have been retried');
+  assert.deepStrictEqual(bg.badges, [], 'a retry that succeeds is not a user-visible failure');
+});
+
+test('does not retry a failure that is not about the quota', async () => {
+  const bg = loadBg({ captureFails: () => 'Cannot access contents of the page' });
+  await bg.ctx.runCapture('visible', OPTS).catch(() => {});
+  assert.strictEqual(bg.shots.length, 1);
+});
+
+test('a failed capture does not stall the next one', async () => {
+  const bg = loadBg({ captureFails: (n) => (n === 1 ? 'Cannot access contents of the page' : null) });
+  await bg.ctx.runCapture('visible', OPTS).catch(() => {});
+  await bg.ctx.runCapture('visible', OPTS);
+  assert.strictEqual(bg.shots.length, 2, 'the gate stayed shut on the rejected promise');
+});
+
+// --- "Cannot access a chrome:// URL" ---------------------------------------
+// Hiding the scrollbar is cosmetic and is on by default, so on a chrome:// page
+// it threw before the shutter was ever reached, and the failure went nowhere
+// but the console - identical, from outside, to a button that does nothing.
+
+test('hiding the scrollbar does not fail a capture on an uninjectable page', async () => {
+  const bg = loadBg({ scriptFails: true });
+  await assert.doesNotReject(() => bg.ctx.setScrollbarHidden(TAB, true));
+  await assert.doesNotReject(() => bg.ctx.setScrollbarHidden(TAB, false));
+});
+
+test('an uninjectable page still reaches the shutter', async () => {
+  const bg = loadBg({ scriptFails: true });
+  await bg.ctx.runCapture('visible', OPTS);
+  assert.strictEqual(bg.shots.length, 1, 'the cosmetic step swallowed the whole capture');
+});
+
+test('a capture that really fails flashes the badge instead of dying quietly', async () => {
+  const bg = loadBg({ captureFails: () => 'Cannot access a chrome:// URL' });
+  await bg.ctx.runCapture('visible', OPTS).catch(bg.ctx.captureFailed);
+  await settle(); // flashBadge is fire-and-forget: let it reach setBadgeText
+  assert.deepStrictEqual(bg.badges, ['!']);
+});
+
+// --- the popup says which page it was --------------------------------------
+
+function loadPopup(url) {
+  const els = {};
+  const sent = [];
+  const makeEl = () => {
+    const el = {
+      style: {}, dataset: {}, listeners: {},
+      disabled: false, hidden: true, checked: false, value: '', textContent: '',
+      addEventListener(t, f) { (el.listeners[t] = el.listeners[t] || []).push(f); },
+      querySelector: () => makeEl(),
+      querySelectorAll: () => [],
+    };
+    return el;
+  };
+  const modes = ['visible', 'fullpage', 'region'].map((m) => {
+    const el = makeEl();
+    el.dataset.mode = m;
+    return el;
+  });
+  const context = {
+    console: { ...console, error: () => {} }, Math, parseFloat, JSON,
+    window: { close: () => {} },
+    document: {
+      getElementById: (id) => (els[id] = els[id] || makeEl()),
+      querySelector: () => makeEl(),
+      querySelectorAll: (sel) => (sel.includes('#modes') ? modes : []),
+    },
+    chrome: {
+      tabs: { query: async () => [{ id: 1, url, title: 'T' }], create: () => {} },
+      storage: { local: { get: async () => ({}), set: async () => {} } },
+      runtime: { sendMessage: async (m) => { sent.push(m); return true; } },
+      tabCapture: { getMediaStreamId: async () => 'sid' },
+    },
+    localStorage: { getItem: () => null, setItem: () => {} },
+  };
+  vm.createContext(context);
+  vm.runInContext(read('popup.js'), context);
+  return {
+    els, sent,
+    ready: settle, // let load() resolve so activeTab is populated
+    click: (mode) => modes.find((b) => b.dataset.mode === mode).listeners.click[0](),
+  };
+}
+
+test('refuses a chrome:// page with a message rather than a silent no-op', async () => {
+  const p = loadPopup('chrome://extensions/');
+  await p.ready();
+  await p.click('visible');
+  assert.deepStrictEqual(p.sent, [], 'the worker was asked to capture a page it cannot touch');
+  assert.strictEqual(p.els.err.hidden, false);
+  assert.match(p.els.err.textContent, /chrome:\/\//);
+});
+
+test('refuses the extension gallery and devtools too', async () => {
+  for (const url of ['chrome-extension://abc/page.html', 'devtools://devtools/bundled/x.html', 'about:blank']) {
+    const p = loadPopup(url);
+    await p.ready();
+    await p.click('region');
+    assert.deepStrictEqual(p.sent, [], `${url} was allowed through`);
+  }
+});
+
+test('lets an ordinary page through untouched', async () => {
+  for (const url of ['https://a.com/x', 'http://a.com', 'file:///tmp/a.html']) {
+    const p = loadPopup(url);
+    await p.ready();
+    await p.click('visible');
+    assert.deepStrictEqual(p.sent.map((m) => m.type), ['capture'], `${url} was wrongly blocked`);
+  }
+});
+
+// --- "Cannot read properties of null (reading 'chunks')" --------------------
+// MediaRecorder.stop() flushes one last dataavailable on a later task, by which
+// time stopRecording has already nulled `rec`. The handler read rec.chunks, so
+// it threw and the final second of every recording was lost.
+
+function loadOffscreen() {
+  const recorders = [];
+  const downloads = [];
+  class FakeRecorder {
+    constructor() { this.state = 'recording'; recorders.push(this); }
+    start() {}
+    // Mirrors the real ordering: a final dataavailable, then onstop, both async.
+    stop() { this.state = 'inactive'; }
+    flush(blob) { this.ondataavailable({ data: blob }); }
+    finish() { this.onstop(); }
+  }
+  FakeRecorder.isTypeSupported = () => true;
+
+  const track = { stop() {}, addEventListener() {} };
+  const stream = { getVideoTracks: () => [track], getTracks: () => [track] };
+  const context = {
+    console: { ...console, error: () => {}, warn: () => {}, log: () => {} },
+    chrome: {
+      runtime: { onMessage: { addListener() {} }, sendMessage: async () => {}, getURL: (p) => p },
+    },
+    navigator: { mediaDevices: { getUserMedia: async () => stream } },
+    MediaRecorder: FakeRecorder,
+    Blob: class { constructor(parts) { this.parts = parts; this.size = parts.length; } },
+    URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
+    document: {
+      createElement: () => ({ style: {}, click() {}, remove() {}, appendChild() {} }),
+      body: { appendChild() {} },
+    },
+    setTimeout: () => 0, clearInterval: () => {}, setInterval: () => 0,
+    GIF: class {},
+  };
+  vm.createContext(context);
+  vm.runInContext(read('offscreen.js'), context);
+  // download() writes through an <a>, so swap it out and keep the Blob instead.
+  vm.runInContext('download = (blob, name) => { __downloads.push([blob, name]); };', Object.assign(context, { __downloads: downloads }));
+  return { ctx: context, recorders, downloads };
+}
+
+test('the final flush after stop() still lands in the recording', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const r = o.recorders[0];
+  r.flush({ size: 10 });
+  o.ctx.stopRecording('out.webm');
+  // `rec` is null now; this is the flush MediaRecorder still owed us.
+  assert.doesNotThrow(() => r.flush({ size: 7 }), 'the handler dereferenced a nulled rec');
+  r.finish();
+  assert.strictEqual(o.downloads.length, 1);
+  assert.strictEqual(o.downloads[0][0].parts.length, 2, 'the last chunk never reached the file');
+});
+
+test('a zero-length flush is still ignored', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const r = o.recorders[0];
+  r.flush({ size: 0 });
+  o.ctx.stopRecording('out.webm');
+  r.finish();
+  assert.strictEqual(o.downloads[0][0].parts.length, 0);
+});
