@@ -37,3 +37,22 @@ test('the notice names the gif.js release and files that are actually vendored',
       `${f} is not the gif.js ${release} the notice describes`);
   }
 });
+
+// --- the NeuQuant notice inside gif.worker.js ---------------------------
+// gif.worker.js also bundles gif.js's TypedNeuQuant.js, a port of Anthony
+// Dekker's NeuQuant. Its license asks only that Dekker's copyright notice
+// remain intact, and gif.js's minified build strips it, so the notice file
+// carries it instead.
+
+test('the notices file carries Dekker\'s NeuQuant notice for gif.worker.js', () => {
+  const worker = read('gif.worker.js');
+  assert.ok(worker.includes('"./TypedNeuQuant.js"'),
+    'gif.worker.js no longer bundles TypedNeuQuant.js, so the NeuQuant section is stale');
+  const release = notices.match(/^NeuQuant - bundled as TypedNeuQuant\.js in gif\.js (\S+)\nFiles in this extension: gif\.worker\.js$/m)?.[1];
+  assert.ok(release, 'no NeuQuant section covers gif.worker.js');
+  assert.ok(worker.startsWith(`// gif.worker.js ${release} - `),
+    `the NeuQuant section names gif.js ${release}, which is not the vendored release`);
+  assert.match(notices, /^Copyright \(c\) 1994 Anthony Dekker$/m);
+  assert.match(notices, /^copies from any such party to do so, with the only requirement being\nthat this copyright notice remain intact\.$/m,
+    'the condition that makes the NeuQuant notice mandatory is missing');
+});
