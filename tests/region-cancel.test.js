@@ -49,9 +49,11 @@ function loadBg({ scriptFails = false } = {}) {
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };
 
+  let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   const context = {
     chrome, console, URL, btoa, Date, clearTimeout,
-    setTimeout: (fn) => fn(), // collapse the settle sleeps
+    // Collapse the settle sleeps. The capture deadline never passes.
+    setTimeout: (fn, ms) => { if (ms !== captureTimeout) fn(); },
     window: {}, // the page the cancel injection runs against
     document: { getElementById: () => null, head: null, documentElement: { appendChild() {} }, createElement: () => ({ style: {} }) },
     OffscreenCanvas: FakeCanvas,
@@ -60,6 +62,7 @@ function loadBg({ scriptFails = false } = {}) {
   };
   vm.createContext(context);
   vm.runInContext(read('background.js'), context);
+  captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
 
   const baseline = listeners.length; // background.js's own top-level listener
   return {

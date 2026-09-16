@@ -56,10 +56,12 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
   // look right even though every slice was the same unmoved viewport.
   const captureAt = [];
   const scriptCalls = [];
+  let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   const context = {
     console,
     URL, btoa, Date, clearTimeout,
-    setTimeout: (fn) => fn(),      // collapse the settle sleeps so tests stay fast
+    // Collapse the settle sleeps so tests stay fast. The capture deadline never passes.
+    setTimeout: (fn, ms) => { if (ms !== captureTimeout) fn(); },
     document: { documentElement: de, body, scrollingElement: de, querySelectorAll: () => fixed },
     getComputedStyle: (e) => ({ position: fixed.includes(e) ? 'fixed' : 'static' }),
     window: {
@@ -97,6 +99,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
   };
   vm.createContext(context);
   vm.runInContext(CODE, context);
+  captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   return { ctx: context, canvases, scriptCalls, captureAt };
 }
 

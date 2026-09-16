@@ -39,15 +39,18 @@ async function pressShortcut(command, format) {
     storage: { local: { get: async () => ({ opts: { format, filename: 'shot' } }) } },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };
+  let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   const context = {
     chrome, console: { ...console, error: () => {} }, URL, btoa, Date,
-    setTimeout: (fn) => fn(), // nothing on this path needs a real wait
+    // Nothing on this path needs a real wait, and the capture deadline never passes.
+    setTimeout: (fn, ms) => { if (ms !== captureTimeout) fn(); },
     OffscreenCanvas: FakeCanvas,
     createImageBitmap: async () => ({ width: 100, height: 100 }),
     fetch: async () => ({ blob: async () => ({}) }),
   };
   vm.createContext(context);
   vm.runInContext(read('background.js'), context);
+  captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   await onCommand(command);
   await settle(); // the listener doesn't return the capture, so let it finish
   return downloads;

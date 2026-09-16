@@ -39,6 +39,7 @@ async function getActiveTab() {
 // earlier capture - so every call goes through this gate: one at a time, spaced
 // out, and retried once if it still comes back over quota.
 const CAPTURE_MIN_GAP_MS = 550;
+const CAPTURE_TIMEOUT_MS = 5000;
 let captureGate = Promise.resolve();
 let lastCaptureAt = 0;
 
@@ -47,17 +48,29 @@ function captureVisible(windowId) {
     const wait = CAPTURE_MIN_GAP_MS - (Date.now() - lastCaptureAt);
     if (wait > 0) await sleep(wait);
     try {
-      return await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+      return await captureWithTimeout(windowId);
     } catch (e) {
       if (!/quota/i.test(e?.message || '')) throw e;
       await sleep(CAPTURE_MIN_GAP_MS);
-      return await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+      return await captureWithTimeout(windowId);
     } finally {
       lastCaptureAt = Date.now();
     }
   });
   captureGate = shot.catch(() => {}); // one caller's failure must not stall the next
   return shot;
+}
+
+// Chrome has been seen never to answer a captureVisibleTab call. Every capture
+// queued behind it then waited until the worker restarted, with the page left
+// scrolled and its scrollbar and headers hidden. So a call that takes longer
+// than CAPTURE_TIMEOUT_MS fails instead: the page is put back, the badge
+// flashes, and the next capture goes ahead.
+function captureWithTimeout(windowId) {
+  return Promise.race([
+    chrome.tabs.captureVisibleTab(windowId, { format: 'png' }),
+    sleep(CAPTURE_TIMEOUT_MS).then(() => { throw new Error(`captureVisibleTab did not answer within ${CAPTURE_TIMEOUT_MS / 1000}s`); }),
+  ]);
 }
 
 // A capture has no UI thread to report into: the popup has closed on Region and

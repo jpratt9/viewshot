@@ -18,10 +18,12 @@ const settle = () => new Promise((r) => setImmediate(r));
 
 // background.js against a fake browser. `clock` stands in for Date.now so the
 // rate-limit gate can be driven without real waiting; sleeps advance it.
-function loadBg({ captureFails = null, scriptFails = false } = {}) {
+function loadBg({ captureFails = null, captureHangs = null, scriptFails = false } = {}) {
   const shots = [];
   const badges = [];
   const sleeps = [];
+  const deadlines = [];
+  let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   let now = 100000;
 
   class FakeCanvas {
@@ -37,6 +39,7 @@ function loadBg({ captureFails = null, scriptFails = false } = {}) {
       query: async () => [TAB],
       captureVisibleTab: async () => {
         shots.push(now);
+        if (captureHangs && captureHangs(shots.length)) return new Promise(() => {}); // Chrome never answers
         const e = captureFails && captureFails(shots.length);
         if (e) throw new Error(e);
         return PNG;
@@ -60,8 +63,12 @@ function loadBg({ captureFails = null, scriptFails = false } = {}) {
     chrome, console: { ...console, error: () => {}, warn: () => {}, log: () => {} },
     URL, btoa, clearTimeout,
     // Sleeps are the thing under test here, so record them and move the clock
-    // rather than actually waiting.
-    setTimeout: (fn, ms) => { sleeps.push(ms || 0); now += ms || 0; fn(); },
+    // rather than actually waiting. The capture deadline isn't a sleep: it is
+    // held until the test calls expire().
+    setTimeout: (fn, ms) => {
+      if (ms === captureTimeout) { deadlines.push(fn); return; }
+      sleeps.push(ms || 0); now += ms || 0; fn();
+    },
     // buildName still needs a real Date; only now() is under our control.
     Date: class extends Date { static now() { return now; } },
     window: {},
@@ -72,7 +79,12 @@ function loadBg({ captureFails = null, scriptFails = false } = {}) {
   };
   vm.createContext(context);
   vm.runInContext(read('background.js'), context);
-  return { ctx: context, shots, badges, sleeps, tick: (ms) => { now += ms; } };
+  captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
+  return {
+    ctx: context, shots, badges, sleeps,
+    tick: (ms) => { now += ms; },
+    expire: () => deadlines.splice(0).forEach((fn) => fn()), // the capture deadline passes
+  };
 }
 
 const OPTS = { format: 'png', quality: 1, filename: 'x', toClipboard: false, hideScrollbar: true };
@@ -118,6 +130,55 @@ test('a failed capture does not stall the next one', async () => {
   await bg.ctx.runCapture('visible', OPTS).catch(() => {});
   await bg.ctx.runCapture('visible', OPTS);
   assert.strictEqual(bg.shots.length, 2, 'the gate stayed shut on the rejected promise');
+});
+
+// --- a capture Chrome never answers -----------------------------------------
+// Chrome was seen never to return from a captureVisibleTab call. The gate
+// waited on that call for good, so the capture never finished and neither did
+// any capture after it: nothing saved, no badge, and the page left with its
+// scrollbar hidden.
+
+test('gives up on a capture Chrome never answers', async () => {
+  const bg = loadBg({ captureHangs: (n) => n === 1 });
+  const hidden = [];
+  const setScrollbarHidden = bg.ctx.setScrollbarHidden;
+  bg.ctx.setScrollbarHidden = (tab, hide) => { hidden.push(hide); return setScrollbarHidden(tab, hide); };
+  let failure;
+  bg.ctx.runCapture('visible', OPTS).catch((e) => { failure = e; bg.ctx.captureFailed(e); });
+  await settle();
+  assert.strictEqual(failure, undefined, 'gave up before the deadline');
+  bg.expire();
+  await settle();
+  assert.match(String(failure), /did not answer/, 'still waiting on a call Chrome will never answer');
+  assert.deepStrictEqual(hidden, [true, false], 'the scrollbar was left hidden');
+  assert.deepStrictEqual(bg.badges, ['!']);
+});
+
+test('a capture Chrome never answers does not hold up the next one', async () => {
+  const bg = loadBg({ captureHangs: (n) => n === 1 });
+  bg.ctx.runCapture('visible', OPTS).catch(() => {});
+  let next;
+  bg.ctx.runCapture('visible', OPTS).then(() => { next = 'saved'; }, (e) => { next = e; });
+  await settle();
+  bg.expire();
+  await settle();
+  assert.strictEqual(bg.shots.length, 2, 'the next capture never reached Chrome');
+  assert.strictEqual(next, 'saved');
+});
+
+test('gives up on a quota retry Chrome never answers', async () => {
+  const bg = loadBg({
+    captureFails: (n) => (n === 1 ? 'This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.' : null),
+    captureHangs: (n) => n === 2,
+  });
+  let failure;
+  bg.ctx.runCapture('visible', OPTS).catch((e) => { failure = e; });
+  await settle();
+  assert.strictEqual(bg.shots.length, 2, 'the quota rejection was not retried');
+  assert.strictEqual(failure, undefined, 'gave up before the deadline');
+  bg.expire();
+  await settle();
+  assert.match(String(failure), /did not answer/, 'still waiting on a retry Chrome will never answer');
 });
 
 // --- "Cannot access a chrome:// URL" ---------------------------------------
