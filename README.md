@@ -5,15 +5,30 @@ A fast, minimal, **open-source** Chrome extension for screenshots — capture th
 ## Features
 - One-click capture: visible area · full page (scroll-stitch, sticky-header aware) · region select
 - PNG / JPG / WebP, with a quality slider
+- Tab recording to WebM or GIF — choose one as the format, then **Record** and **Stop recording** (GIFs are 10 fps, up to 720px wide, and stop by themselves after about a minute)
 - Filename templates — `{date} {time} {domain} {title}`
 - Download or copy straight to clipboard
-- Customizable keyboard shortcuts
-- Minimal permissions (`activeTab`) — nothing leaves your device
+- **Hide scrollbar before capturing** keeps the scrollbar out of screenshots (on by default)
+- Keyboard shortcuts — `Alt+Shift+V` visible area · `Alt+Shift+F` full page · `Alt+Shift+R` region (change them at `chrome://extensions/shortcuts`)
+- Nothing leaves your device — see [Permissions](#permissions)
 
 ## Install (unpacked)
 1. Open `chrome://extensions` and enable **Developer mode**
 2. **Load unpacked** → select this folder
 3. Pin the ViewShot icon and click it (or use the keyboard shortcut)
+
+## Permissions
+- `activeTab` — capture the tab you clicked the icon or pressed a shortcut on
+- `downloads` — save screenshots
+- `scripting` — run the region selector, full-page scrolling and scrollbar hiding in that tab
+- `storage` — remember your settings and whether a recording is running
+- `offscreen` — copy to the clipboard and record, which the background service worker can't do
+- `tabCapture` — get the tab's video for recording
+
+## Development
+There's no build step and nothing to install: Chrome runs the files in this folder as they are. After changing one, press the reload button on ViewShot's card in `chrome://extensions`.
+
+Run the tests with `npm test`. They use Node's built-in test runner, live in `tests/`, and CI runs them on every push and pull request.
 
 ## License
 [GNU GPLv3](LICENSE) © John Pratt
