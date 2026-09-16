@@ -5,16 +5,16 @@ let activeTab = null;
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
 
-// Pages that aren't http(s), file or ftp are refused before anything is sent:
-// captures there failed in the worker, which threw into a console the user
-// never has open ("Cannot access a chrome:// URL"). A Visible screenshot of a
-// chrome:// page (the New Tab page is one) is let through: Chrome refuses
-// executeScript there, which Full page and Region need, but activeTab still
-// lets it capture the page.
+// Pages that aren't http(s), file, ftp or chrome:// are refused before anything
+// is sent: captures there failed in the worker, which threw into a console the
+// user never has open. chrome:// pages (the New Tab page is one) refuse
+// executeScript ("Cannot access a chrome:// URL"), which Full page and Region
+// need, but activeTab still lets Chrome capture and record them, so Visible
+// and Record go through.
 // activeTab is null until load() resolves; the worker's badge covers that gap.
-const CAPTURABLE = /^(https?|file|ftp):/i;
+const CAPTURABLE = /^(https?|file|ftp|chrome):/i;
 const CHROME_PAGE = /^chrome:/i;
-const uncapturable = (tab, rec) => !!(tab && tab.url && !CAPTURABLE.test(tab.url) && (rec || !CHROME_PAGE.test(tab.url)));
+const uncapturable = (tab) => !!(tab && tab.url && !CAPTURABLE.test(tab.url));
 // Chrome never lets an extension script the Web Store (all of chrome.google.com
 // and chromewebstore.google.com), so Full page and Region can't run there.
 // Visible still can: Chrome lets activeTab capture the store.
@@ -88,7 +88,7 @@ function toggleRec() {
 document.querySelectorAll('#modes .mode').forEach((btn) => {
   btn.addEventListener('click', async () => {
     if (btn.disabled) return;
-    if (uncapturable(activeTab, isRecFmt($('format').value))) {
+    if (uncapturable(activeTab)) {
       showError('Can’t capture this page. Open a normal http(s) page and try again.');
       return; // keep the popup open so the error is visible
     }

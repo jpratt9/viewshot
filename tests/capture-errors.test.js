@@ -230,8 +230,9 @@ test('lets an ordinary page through untouched', async () => {
 
 // --- chrome:// pages ---------------------------------------------------------
 // Chrome refuses executeScript on chrome:// pages, but once the popup has
-// granted activeTab it lets captureVisibleTab through. The popup refused every
-// mode there, so the one capture Chrome allows never reached the worker.
+// granted activeTab it lets captureVisibleTab and tabCapture through. The popup
+// refused every mode there, and then still refused Record, so captures Chrome
+// allows never reached the worker.
 
 const CHROME_URLS = ['chrome://extensions/', 'chrome://version/', 'chrome://newtab/'];
 
@@ -257,19 +258,20 @@ test('refuses Full page and Region on chrome:// pages with a message rather than
   }
 });
 
-test('still refuses Record on chrome:// pages', async () => {
+test('records on chrome:// pages', async () => {
   for (const url of CHROME_URLS) {
-    const p = loadPopup(url);
-    await p.ready();
-    p.els.format.value = 'webm'; // turns Visible into Record
-    await p.click('visible');
-    assert.deepStrictEqual(p.sent, [], `recording ${url} was sent to the worker`);
-    assert.strictEqual(p.els.err.hidden, false);
+    for (const format of ['webm', 'gif']) {
+      const p = loadPopup(url);
+      await p.ready();
+      p.els.format.value = format; // turns Visible into Record
+      await p.click('visible');
+      assert.deepStrictEqual(p.sent.map((m) => m.type), ['rec-start'], `recording ${url} as ${format} was blocked`);
+    }
   }
 });
 
 test('the refusal messages no longer steer the user away from chrome:// pages or the Web Store', async () => {
-  // Visible works on both, and Record works on the Web Store.
+  // Visible and Record work on both.
   const page = loadPopup('chrome-extension://abc/page.html');
   await page.ready();
   await page.click('visible');
