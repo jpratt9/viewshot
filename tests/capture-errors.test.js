@@ -230,16 +230,18 @@ function loadOffscreen() {
     // Mirrors the real ordering: a final dataavailable, then onstop, both async.
     stop() { this.state = 'inactive'; }
     flush(blob) { this.ondataavailable({ data: blob }); }
-    finish() { this.onstop(); }
+    finish() { this.onstop?.(); } // `stop` fires whether or not anyone listens
   }
   FakeRecorder.isTypeSupported = () => true;
 
-  const track = { stop() {}, addEventListener() {} };
+  const sent = [];
+  const trackListeners = {};
+  const track = { stop() {}, addEventListener: (type, fn) => { trackListeners[type] = fn; } };
   const stream = { getVideoTracks: () => [track], getTracks: () => [track] };
   const context = {
     console: { ...console, error: () => {}, warn: () => {}, log: () => {} },
     chrome: {
-      runtime: { onMessage: { addListener() {} }, sendMessage: async () => {}, getURL: (p) => p },
+      runtime: { onMessage: { addListener() {} }, sendMessage: async (m) => { sent.push(m); }, getURL: (p) => p },
     },
     navigator: { mediaDevices: { getUserMedia: async () => stream } },
     MediaRecorder: FakeRecorder,
@@ -256,7 +258,7 @@ function loadOffscreen() {
   vm.runInContext(read('offscreen.js'), context);
   // download() writes through an <a>, so swap it out and keep the Blob instead.
   vm.runInContext('download = (blob, name) => { __downloads.push([blob, name]); };', Object.assign(context, { __downloads: downloads }));
-  return { ctx: context, recorders, downloads };
+  return { ctx: context, recorders, downloads, sent, endTrack: () => trackListeners.ended() };
 }
 
 test('the final flush after stop() still lands in the recording', async () => {
@@ -268,6 +270,7 @@ test('the final flush after stop() still lands in the recording', async () => {
   // `rec` is null now; this is the flush MediaRecorder still owed us.
   assert.doesNotThrow(() => r.flush({ size: 7 }), 'the handler dereferenced a nulled rec');
   r.finish();
+  await settle(); // the save waits on the recorder's `stop`
   assert.strictEqual(o.downloads.length, 1);
   assert.strictEqual(o.downloads[0][0].parts.length, 2, 'the last chunk never reached the file');
 });
@@ -279,5 +282,50 @@ test('a zero-length flush is still ignored', async () => {
   r.flush({ size: 0 });
   o.ctx.stopRecording('out.webm');
   r.finish();
+  await settle();
   assert.strictEqual(o.downloads[0][0].parts.length, 0);
+});
+
+// --- a WebM recording lost when its tab closed -----------------------------
+// Closing the recorded tab ends the track, and MediaRecorder stops by itself -
+// final flush, then `stop` - before rec-stop has been to the worker and back.
+// stopRecording() only set onstop after that, so it never ran and no file was
+// written.
+
+test('a recording whose tab was closed is still saved', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const r = o.recorders[0];
+  r.flush({ size: 10 });
+  o.endTrack();
+  assert.deepStrictEqual(o.sent.map((m) => m.type), ['rec-stop'], 'the ended track did not ask the worker to stop');
+  // The recorder winds itself down before the worker's answer arrives.
+  r.state = 'inactive';
+  r.flush({ size: 7 });
+  r.finish();
+  o.ctx.stopRecording('out.webm'); // the worker's rec-stop-offscreen
+  await settle();
+  assert.strictEqual(o.downloads.length, 1, 'the recording was never saved');
+  assert.strictEqual(o.downloads[0][1], 'out.webm');
+  assert.strictEqual(o.downloads[0][0].parts.length, 2, 'the saved recording is missing chunks');
+});
+
+test('a tab-closed recording waits for a stop that is still on its way', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const r = o.recorders[0];
+  r.flush({ size: 10 });
+  o.endTrack();
+  // Already inactive, with its final flush and `stop` still queued: it must not
+  // be stopped again, and nothing may be saved before that flush lands.
+  r.state = 'inactive';
+  r.stop = () => { throw new Error('stop() called on an inactive recorder'); };
+  o.ctx.stopRecording('out.webm');
+  await settle();
+  assert.strictEqual(o.downloads.length, 0, 'saved before the final flush arrived');
+  r.flush({ size: 7 });
+  r.finish();
+  await settle();
+  assert.strictEqual(o.downloads.length, 1, 'the recording was never saved');
+  assert.strictEqual(o.downloads[0][0].parts.length, 2, 'the saved recording is missing its final chunk');
 });

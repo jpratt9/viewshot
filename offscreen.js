@@ -103,6 +103,10 @@ async function startRecording(streamId, format, width, height) {
     log('starting MediaRecorder, mime=', mime);
     rec.recorder = new MediaRecorder(stream, { mimeType: mime });
     rec.recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    // Closing the captured tab ends the track, and the recorder stops by itself
+    // - final flush, then `stop` - before rec-stop has been to the worker and
+    // back. An onstop set in stopRecording() by then never runs, so listen now.
+    rec.stopped = new Promise((res) => { rec.recorder.onstop = res; });
     // Timeslice → periodic dataavailable. Survives an offscreen-doc eviction
     // mid-recording (MV3 may tear it down); without this, a crash loses
     // everything because the only flush is at stop().
@@ -128,13 +132,14 @@ function stopRecording(filename) {
     // and THEN fires `onstop` on a later task. We must (a) capture
     // `chunks` + `recorder` into locals so the closure doesn't deref a
     // nulled `rec`, and (b) keep the stream alive until that final flush
-    // completes — track-stopping happens inside onstop too.
-    const { recorder, chunks } = rec;
-    recorder.onstop = () => {
+    // completes — track-stopping waits for `stop` too.
+    const { recorder, chunks, stopped } = rec;
+    stopped.then(() => {
       download(new Blob(chunks, { type: 'video/webm' }), filename);
       stream.getTracks().forEach((t) => t.stop());
-    };
-    recorder.stop();
+    });
+    // Already inactive if the track ended first: there is nothing left to stop.
+    if (recorder.state !== 'inactive') recorder.stop();
     rec = null;
   }
 }
