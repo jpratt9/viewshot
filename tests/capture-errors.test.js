@@ -834,3 +834,33 @@ test('a settings change leaves an open popup\'s Stop and Record alone', async ()
   assert.strictEqual(p.els.stopBtn.disabled, false, 'Stop was greyed out mid-recording');
   assert.strictEqual(p.btn('visible').disabled, true, 'Record came back mid-recording');
 });
+
+// --- a recording change that lands while the popup is opening ---------------
+// load() waits on a storage read and a tab query. When `rec` changed after the
+// read, the storage listener applied the change, and then load() set Stop from
+// the older value it had read. The popup kept that state until `rec` changed
+// again or the popup was reopened.
+
+test('an opening popup keeps a recording end that lands before load() finishes', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' }, rec: RUNNING } });
+  p.stored({ rec: { oldValue: RUNNING } }); // removed after load() read it, before load() went on
+  await p.ready();
+  assert.strictEqual(p.els.stopBtn.disabled, true, 'load() enabled Stop for a recording that had ended');
+  assert.strictEqual(p.btn('visible').disabled, false, 'load() greyed Record out for a recording that had ended');
+});
+
+test('an opening popup keeps a recording start that lands before load() finishes', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' } } });
+  p.stored({ rec: { newValue: RUNNING } }); // written after load() read it, before load() went on
+  await p.ready();
+  assert.strictEqual(p.els.stopBtn.disabled, false, 'load() greyed Stop out while a recording was running');
+  assert.strictEqual(p.btn('visible').disabled, true, 'load() left Record enabled over a running recording');
+});
+
+test('a settings change while the popup is opening leaves load() to set Stop and Record', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' }, rec: RUNNING } });
+  p.stored({ opts: { newValue: { format: 'webm' } } }); // save() before load() went on
+  await p.ready();
+  assert.strictEqual(p.els.stopBtn.disabled, false, 'Stop was greyed out mid-recording');
+  assert.strictEqual(p.btn('visible').disabled, true, 'Record came back mid-recording');
+});

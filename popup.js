@@ -2,6 +2,7 @@ const DEFAULTS = { format: 'jpg', quality: 0.92, filename: 'shot-{date}-{time}',
 const $ = (id) => document.getElementById(id);
 const isRecFmt = (f) => f === 'webm' || f === 'mp4' || f === 'gif';
 let activeTab = null;
+let recChanged = false; // the storage listener at the bottom has seen `rec` change
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
 
@@ -54,8 +55,10 @@ async function load() {
   ]);
   [activeTab] = tabs;
   // The Stop button stays greyed out unless a recording is actually running.
-  // Set before apply(), whose toggleRec() greys Record out from it.
-  $('stopBtn').disabled = !stored.rec;
+  // Set before apply(), whose toggleRec() greys Record out from it. Skipped if
+  // `rec` changed while this function waited: the storage listener has already
+  // set Stop from that change, which can be newer than `stored.rec`.
+  if (!recChanged) $('stopBtn').disabled = !stored.rec;
   apply(migrate({ ...DEFAULTS, ...(stored.opts || {}) }));
 }
 
@@ -165,6 +168,7 @@ $('stopBtn').addEventListener('click', () => { if ($('stopBtn').disabled) return
 // load().
 chrome.storage.local.onChanged.addListener((changes) => {
   if (!('rec' in changes)) return;
+  recChanged = true;
   $('stopBtn').disabled = !changes.rec.newValue;
   toggleRec();
 });
