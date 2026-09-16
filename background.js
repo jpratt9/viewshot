@@ -430,7 +430,9 @@ async function blipRecordingIndicator(tabId) {
   } catch (e) {
     // chrome:// URLs and similar refuse executeScript — skip the wait so we
     // don't delay the recording start for nothing.
-    console.error('[ViewShot] blip failed:', e);
+    // Expected on those pages, so only a warning: chrome://extensions lists
+    // every console.error from the worker as an extension error.
+    console.warn('[ViewShot] blip failed:', e);
     return;
   }
   await new Promise((r) => setTimeout(r, BLIP_ANIM_MS + 50));

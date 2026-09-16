@@ -144,6 +144,23 @@ test('a capture that really fails flashes the badge instead of dying quietly', a
   assert.deepStrictEqual(bg.badges, ['!']);
 });
 
+// --- "blip failed" ---------------------------------------------------------
+// Starting a recording on a page that refuses scripts (the Web Store, or a
+// file:// page without file access) skips the edge-glow blip on purpose. The
+// skip was logged with console.error, and chrome://extensions lists every
+// console.error from the worker as an extension error.
+
+test('recording a page that refuses scripts logs a warning, not an error', async () => {
+  const bg = loadBg({ scriptFails: true });
+  const logged = { error: [], warn: [] };
+  bg.ctx.console.error = (...a) => logged.error.push(a.join(' '));
+  bg.ctx.console.warn = (...a) => logged.warn.push(a.join(' '));
+  bg.ctx.chrome.offscreen = { hasDocument: async () => true }; // already open
+  await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' });
+  assert.deepStrictEqual(logged.error, [], 'chrome://extensions lists these as extension errors');
+  assert.ok(logged.warn.some((m) => m.includes('blip failed')), 'the skipped blip left no trace in the console');
+});
+
 // --- the popup says which page it was --------------------------------------
 
 function loadPopup(url, { fileAccess = true } = {}) {
