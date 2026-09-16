@@ -207,7 +207,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false } = {}) {
   };
 }
 
-test('refuses the extension gallery and devtools too', async () => {
+test('refuses other extensions\' pages, devtools and about:blank', async () => {
   for (const url of ['chrome-extension://abc/page.html', 'devtools://devtools/bundled/x.html', 'about:blank']) {
     for (const mode of ['visible', 'region']) {
       const p = loadPopup(url);
