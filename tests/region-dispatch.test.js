@@ -129,14 +129,16 @@ function loadBackground() {
   const chrome = {
     runtime: { onMessage: { addListener: (fn) => { listener = fn; } } },
     commands: { onCommand: { addListener() {} } },
-    // No active tab, so runCapture returns straight after this call - enough to
+    // No active tab, so runCapture gives up straight after this call - enough to
     // show it ran without dragging the whole capture pipeline in.
     tabs: { query: async (q) => { queries.push({ ...q }); return []; } }, // copy out of the vm realm
     storage: deep(), scripting: deep(), downloads: deep(), action: deep(), offscreen: deep(),
   };
   const context = {
     chrome, console: { ...console, error: () => {}, log: () => {}, warn: () => {} },
-    URL, btoa, setTimeout, clearTimeout, Date,
+    URL, btoa, clearTimeout, Date,
+    // Giving up flashes the badge, and its 3-second reset mustn't hold the test run open.
+    setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
   };
   vm.createContext(context);
   vm.runInContext(read('background.js'), context);

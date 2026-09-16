@@ -18,13 +18,14 @@ const settle = () => new Promise((r) => setImmediate(r));
 
 // background.js against a fake browser. `clock` stands in for Date.now so the
 // rate-limit gate can be driven without real waiting; sleeps advance it.
-function loadBg({ captureFails = null, captureHangs = null, scriptFails = false } = {}) {
+function loadBg({ captureFails = null, captureHangs = null, scriptFails = false, noActiveTab = false } = {}) {
   const shots = [];
   const badges = [];
   const sleeps = [];
   const deadlines = [];
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   let now = 100000;
+  let onMessage, onCommand;
 
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; }
@@ -33,10 +34,12 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false 
   }
 
   const chrome = {
-    runtime: { onMessage: { addListener() {}, removeListener() {} }, sendMessage: async () => {} },
-    commands: { onCommand: { addListener() {} } },
+    // The first message listener is background.js's own; Region adds more later.
+    runtime: { onMessage: { addListener: (fn) => { onMessage = onMessage || fn; }, removeListener() {} }, sendMessage: async () => {} },
+    commands: { onCommand: { addListener: (fn) => { onCommand = fn; } } },
     tabs: {
-      query: async () => [TAB],
+      query: async () => (noActiveTab ? [] : [TAB]),
+      get: async (id) => { if (id !== TAB.id) throw new Error(`No tab with id: ${id}.`); return TAB; },
       captureVisibleTab: async () => {
         shots.push(now);
         if (captureHangs && captureHangs(shots.length)) return new Promise(() => {}); // Chrome never answers
@@ -82,6 +85,8 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false 
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   return {
     ctx: context, shots, badges, sleeps,
+    message: (msg) => onMessage(msg, {}, () => {}),
+    command: (cmd, tab) => onCommand(cmd, tab),
     tick: (ms) => { now += ms; },
     expire: () => deadlines.splice(0).forEach((fn) => fn()), // the capture deadline passes
   };
@@ -604,4 +609,88 @@ test('a WebM recording still asks for VP9 and is saved as video/webm', async () 
   o.recorders[0].finish();
   await settle();
   assert.strictEqual(o.downloads[0][0].type, 'video/webm');
+});
+
+// --- the worker's own active-tab lookup coming back empty ------------------
+// The popup and the shortcuts knew which tab they meant but never said, so the
+// worker asked Chrome for the active tab all over again. In headless Chrome
+// that lookup came back empty while the first popup after a (re)load was open.
+// A screenshot then did nothing at all, with no badge, and a recording started
+// without its tab: no blip, not sized to the tab, and no {domain} or {title}
+// for its name.
+
+test('the popup says which tab a screenshot or recording is for', async () => {
+  for (const [format, type] of [['png', 'capture'], ['webm', 'rec-start']]) {
+    const p = loadPopup('https://a.com/x');
+    await p.ready();
+    p.els.format.value = format; // webm turns Visible into Record
+    await p.click('visible');
+    assert.deepStrictEqual(p.sent.map((m) => [m.type, m.tabId]), [[type, 1]], `${type} did not name the popup's tab`);
+  }
+});
+
+test('a screenshot uses the tab it was sent for, even when the worker finds no active tab', async () => {
+  const bg = loadBg({ noActiveTab: true });
+  bg.message({ type: 'capture', mode: 'visible', opts: OPTS, tabId: TAB.id });
+  await settle();
+  assert.strictEqual(bg.shots.length, 1, 'the screenshot was never taken');
+  assert.deepStrictEqual(bg.badges, []);
+});
+
+test('a shortcut uses the tab Chrome hands it, even when the worker finds no active tab', async () => {
+  const bg = loadBg({ noActiveTab: true });
+  await bg.command('capture-visible', TAB);
+  await settle();
+  assert.strictEqual(bg.shots.length, 1, 'the shortcut did nothing');
+  assert.deepStrictEqual(bg.badges, []);
+});
+
+test('a screenshot with no tab to take flashes the badge instead of doing nothing', async () => {
+  const bg = loadBg({ noActiveTab: true });
+  bg.message({ type: 'capture', mode: 'visible', opts: OPTS }); // sent before the popup had found its tab
+  await settle();
+  assert.strictEqual(bg.shots.length, 0);
+  assert.deepStrictEqual(bg.badges, ['!'], 'nothing was saved, and nothing said so');
+});
+
+test('a recording uses the tab it was sent for, even when the worker finds no active tab', async () => {
+  const bg = loadBg({ noActiveTab: true });
+  const { chrome } = bg.ctx;
+  const targets = [];
+  const stored = [];
+  const sent = [];
+  chrome.offscreen = { hasDocument: async () => true }; // already open
+  const run = chrome.scripting.executeScript;
+  chrome.scripting.executeScript = (o) => { targets.push(o.target.tabId); return run(o); };
+  chrome.storage.local.set = async (o) => { stored.push({ ...o.rec }); };
+  chrome.runtime.sendMessage = async (m) => { sent.push({ ...m }); };
+  Object.assign(bg.ctx.window, { innerWidth: 1280, innerHeight: 713, devicePixelRatio: 1 });
+  bg.message({ type: 'rec-start', streamId: 'sid', opts: { ...OPTS, format: 'webm' }, tabId: TAB.id });
+  await settle();
+  assert.deepStrictEqual(targets, [TAB.id, TAB.id], 'the blip and the viewport read were skipped');
+  assert.deepStrictEqual(stored, [{ url: TAB.url, title: TAB.title, format: 'webm', filename: 'x' }], 'no {domain} or {title} to name the file with');
+  const start = sent.find((m) => m.type === 'rec-start-offscreen');
+  assert.deepStrictEqual([start.width, start.height], [1280, 713], 'the recording was not sized to the tab');
+});
+
+// A named tab can close before the worker looks it up. Falling back to the
+// active tab then would shoot or record a different page under its name.
+
+test('a screenshot of a tab that has since closed flashes the badge', async () => {
+  const bg = loadBg();
+  bg.message({ type: 'capture', mode: 'visible', opts: OPTS, tabId: 99 }); // no tab with that id any more
+  await settle();
+  assert.strictEqual(bg.shots.length, 0, 'shot whatever tab was showing instead');
+  assert.deepStrictEqual(bg.badges, ['!']);
+});
+
+test('a recording whose tab has since closed sets nothing up', async () => {
+  const bg = loadBg();
+  const stored = [];
+  bg.ctx.chrome.offscreen = { hasDocument: async () => true }; // already open
+  bg.ctx.chrome.storage.local.set = async (o) => { stored.push(o); };
+  bg.message({ type: 'rec-start', streamId: 'sid', opts: { ...OPTS, format: 'webm' }, tabId: 99 });
+  await settle();
+  assert.strictEqual(stored.length, 0, 'marked as recording with nothing recording');
+  assert.deepStrictEqual(bg.badges, [], 'REC went up for a recording that never started');
 });

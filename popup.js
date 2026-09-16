@@ -107,7 +107,7 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
         return; // keep the popup open so the error is visible
       }
       await save();
-      chrome.runtime.sendMessage({ type: 'rec-start', streamId, opts });
+      chrome.runtime.sendMessage({ type: 'rec-start', streamId, tabId: activeTab.id, opts });
       $('stopBtn').disabled = false; // popup stays open, so reflect the live recording
     } else {
       // Until "Allow access to file URLs" is on, Chrome refuses both
@@ -136,7 +136,7 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
       // nothing at all, and pressing Region again worked only because the second
       // press met a worker that was already awake.
       try {
-        await chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, opts });
+        await chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, tabId: activeTab?.id, opts });
       } catch (e) {
         console.error('[ViewShot] capture message failed:', e);
         showError('Couldn’t reach the extension worker. Try again.');

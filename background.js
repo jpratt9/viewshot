@@ -8,16 +8,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // warm worker wins that race, which is why it only failed sometimes: the
 // "press Region twice" bug. The popup awaits this ack before window.close().
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === 'capture') { sendResponse(true); runCapture(msg.mode, msg.opts).catch(captureFailed); }
-  else if (msg?.type === 'rec-start') startRecording(msg.streamId, msg.opts).catch((e) => console.error('[ViewShot]', e));
+  if (msg?.type === 'capture') { sendResponse(true); runCapture(msg.mode, msg.opts, msg.tabId).catch(captureFailed); }
+  else if (msg?.type === 'rec-start') startRecording(msg.streamId, msg.opts, msg.tabId).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-cap-hit') stopRecording().then(() => flashBadge('MAX')).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-failed') chrome.storage.local.remove('rec').then(() => flashBadge('!'));
 });
 
-chrome.commands.onCommand.addListener(async (cmd) => {
+chrome.commands.onCommand.addListener(async (cmd, tab) => {
   const map = { 'capture-visible': 'visible', 'capture-fullpage': 'fullpage', 'capture-region': 'region' };
-  if (map[cmd]) runCapture(map[cmd], await getOpts()).catch(captureFailed);
+  if (map[cmd]) runCapture(map[cmd], await getOpts(), tab?.id).catch(captureFailed);
 });
 
 async function getOpts() {
@@ -27,7 +27,11 @@ async function getOpts() {
   return o;
 }
 
-async function getActiveTab() {
+// The popup and the shortcuts say which tab they mean. Asking Chrome for the
+// active tab is only the fallback: from the worker, that query has come back
+// empty (headless Chrome, while the first popup after a load was open).
+async function getActiveTab(tabId) {
+  if (tabId) return chrome.tabs.get(tabId);
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
 }
@@ -82,9 +86,9 @@ function captureFailed(e) {
   flashBadge('!').catch(() => {});
 }
 
-async function runCapture(mode, opts) {
-  const tab = await getActiveTab();
-  if (!tab) return;
+async function runCapture(mode, opts, tabId) {
+  const tab = await getActiveTab(tabId);
+  if (!tab) throw new Error('No tab to capture'); // flash the badge rather than do nothing
   await cancelRegion(tab); // an abandoned overlay would otherwise dim this shot
   let png;
   if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
@@ -375,11 +379,11 @@ async function flashBadge(text) {
   setTimeout(() => chrome.action.setBadgeText({ text: '' }), 3000);
 }
 
-async function startRecording(streamId, opts) {
+async function startRecording(streamId, opts, tabId) {
   log('rec-start received, opts=', opts, 'streamId=', streamId);
   // The stream id is minted in the popup (under its user gesture); we just wire
   // it to the offscreen recorder, which is the only context with media APIs.
-  const tab = await getActiveTab(); // for the filename only
+  const tab = await getActiveTab(tabId); // the tab the popup minted the stream id for
   await ensureOffscreen();
   log('offscreen ready, sending rec-start-offscreen, format=', opts.format);
   // Persist enough to name the file at stop time, surviving a worker restart.
