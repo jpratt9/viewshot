@@ -146,7 +146,7 @@ test('a capture that really fails flashes the badge instead of dying quietly', a
 
 // --- the popup says which page it was --------------------------------------
 
-function loadPopup(url) {
+function loadPopup(url, { fileAccess = true } = {}) {
   const els = {};
   const sent = [];
   const makeEl = () => {
@@ -177,6 +177,7 @@ function loadPopup(url) {
       storage: { local: { get: async () => ({}), set: async () => {} } },
       runtime: { sendMessage: async (m) => { sent.push(m); return true; } },
       tabCapture: { getMediaStreamId: async () => 'sid' },
+      extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
     },
     localStorage: { getItem: () => null, setItem: () => {} },
   };
@@ -213,6 +214,63 @@ test('lets an ordinary page through untouched', async () => {
     await p.ready();
     await p.click('visible');
     assert.deepStrictEqual(p.sent.map((m) => m.type), ['capture'], `${url} was wrongly blocked`);
+  }
+});
+
+// --- pages that pass the scheme check but still can't be captured ---------
+// Chrome never lets an extension script the Web Store, and a file:// page can't
+// be scripted or captured until "Allow access to file URLs" is on. The popup
+// let both through, so the only sign of the failure was a 3-second badge, and
+// for Region the popup had already closed by then.
+
+const WEB_STORE_URLS = ['https://chromewebstore.google.com/detail/x/abc', 'https://chrome.google.com/webstore/category/extensions'];
+
+test('refuses Full page and Region on the Web Store', async () => {
+  for (const url of WEB_STORE_URLS) {
+    for (const mode of ['fullpage', 'region']) {
+      const p = loadPopup(url);
+      await p.ready();
+      await p.click(mode);
+      assert.deepStrictEqual(p.sent, [], `${mode} on ${url} was sent to the worker`);
+      assert.strictEqual(p.els.err.hidden, false);
+      assert.match(p.els.err.textContent, /Web Store/);
+    }
+  }
+});
+
+test('still takes Visible on the Web Store, and Full page on look-alike hosts', async () => {
+  const cases = [
+    ...WEB_STORE_URLS.map((url) => [url, 'visible']), // Chrome lets activeTab capture the store
+    ['https://www.google.com/chrome/', 'fullpage'],
+    ['https://notchrome.google.com/', 'fullpage'],
+    ['https://chromewebstore.google.com.example/', 'fullpage'],
+  ];
+  for (const [url, mode] of cases) {
+    const p = loadPopup(url);
+    await p.ready();
+    await p.click(mode);
+    assert.deepStrictEqual(p.sent.map((m) => m.type), ['capture'], `${mode} on ${url} was wrongly blocked`);
+  }
+});
+
+test('refuses every screenshot mode on a file:// page while file access is off', async () => {
+  for (const mode of ['visible', 'fullpage', 'region']) {
+    const p = loadPopup('file:///tmp/a.html', { fileAccess: false });
+    await p.ready();
+    await p.click(mode);
+    assert.deepStrictEqual(p.sent, [], `${mode} was sent to the worker`);
+    assert.strictEqual(p.els.err.hidden, false);
+    assert.match(p.els.err.textContent, /Allow access to file URLs/);
+  }
+});
+
+test('still records on the Web Store, and on a file:// page without file access', async () => {
+  for (const [url, fileAccess] of [[WEB_STORE_URLS[0], true], ['file:///tmp/a.html', false]]) {
+    const p = loadPopup(url, { fileAccess });
+    await p.ready();
+    p.els.format.value = 'webm'; // turns Visible into Record
+    await p.click('visible');
+    assert.deepStrictEqual(p.sent.map((m) => m.type), ['rec-start'], `recording ${url} was blocked`);
   }
 });
 

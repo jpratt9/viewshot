@@ -11,6 +11,10 @@ const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden
 // activeTab is null until load() resolves; the worker's badge covers that gap.
 const CAPTURABLE = /^(https?|file|ftp):/i;
 const uncapturable = (tab) => !!(tab && tab.url && !CAPTURABLE.test(tab.url));
+// Chrome never lets an extension script the Web Store (all of chrome.google.com
+// and chromewebstore.google.com), so Full page and Region can't run there.
+// Visible still can: Chrome lets activeTab capture the store.
+const WEB_STORE = /^https?:\/\/([\w-]+\.)*(chromewebstore|chrome)\.google\.com([:/?#]|$)/i;
 
 function apply(o) {
   $('format').value = o.format;
@@ -101,6 +105,17 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
       chrome.runtime.sendMessage({ type: 'rec-start', streamId, opts });
       $('stopBtn').disabled = false; // popup stays open, so reflect the live recording
     } else {
+      // Until "Allow access to file URLs" is on, Chrome refuses both
+      // executeScript and captureVisibleTab on file:// pages. Recording needs
+      // neither, so only the screenshot modes stop here.
+      if (/^file:/i.test(activeTab?.url || '') && !(await chrome.extension.isAllowedFileSchemeAccess())) {
+        showError('Can’t capture this file. In chrome://extensions, open ViewShot’s Details, turn on “Allow access to file URLs”, and try again.');
+        return; // keep the popup open so the error is visible
+      }
+      if (btn.dataset.mode !== 'visible' && WEB_STORE.test(activeTab?.url || '')) {
+        showError('Chrome doesn’t let extensions run Full page or Region on the Web Store. Visible still works here.');
+        return; // keep the popup open so the error is visible
+      }
       await save();
       // Wait for the worker to acknowledge before closing anything. window.close()
       // in the same turn as the send tears this frame down while a cold-starting
