@@ -167,23 +167,32 @@ async function captureFullPage(tab) {
   )];
 
   let hid = false, landed = 0;
-  for (let i = 0; i < positions.length; i++) {
-    const actual = await scrollPageTo(tab, positions[i]);
-    // The page refused to advance (unscrollable, or a scroller we can't drive).
-    // Stop rather than stack the same viewport down the canvas.
-    if (i > 0 && actual <= landed) break;
-    landed = actual;
-    // Keep fixed/sticky elements (pinned headers, banners) on the FIRST slice
-    // only; hide them on later slices so they aren't stitched in repeatedly.
-    if (i === 1 && !hid) { await setFixedHidden(tab, true); hid = true; }
-    await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
-    const url = await captureVisible(tab.windowId);
-    const bmp = await createImageBitmap(await (await fetch(url)).blob());
-    ctx.drawImage(bmp, 0, Math.round(actual * m.dpr)); // where it really is, not where we asked
+  // finally: a slice that throws part-way must still put the page back, not
+  // leave it scrolled to where the stitch stopped with its headers hidden.
+  try {
+    for (let i = 0; i < positions.length; i++) {
+      const actual = await scrollPageTo(tab, positions[i]);
+      // The page refused to advance (unscrollable, or a scroller we can't drive).
+      // Stop rather than stack the same viewport down the canvas.
+      if (i > 0 && actual <= landed) break;
+      landed = actual;
+      // Keep fixed/sticky elements (pinned headers, banners) on the FIRST slice
+      // only; hide them on later slices so they aren't stitched in repeatedly.
+      if (i === 1 && !hid) { await setFixedHidden(tab, true); hid = true; }
+      await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
+      const url = await captureVisible(tab.windowId);
+      // captureVisibleTab shoots whichever tab is showing in the window. If the
+      // user switched tabs (or moved this one out) mid-stitch, this slice is
+      // another tab: stop rather than stitch it in.
+      const now = await chrome.tabs.get(tab.id);
+      if (!now.active || now.windowId !== tab.windowId) throw new Error('Full page stopped: another tab is now showing');
+      const bmp = await createImageBitmap(await (await fetch(url)).blob());
+      ctx.drawImage(bmp, 0, Math.round(actual * m.dpr)); // where it really is, not where we asked
+    }
+  } finally {
+    if (hid) await setFixedHidden(tab, false); // restore
+    await scrollPageTo(tab, m.prevY);
   }
-
-  if (hid) await setFixedHidden(tab, false); // restore
-  await scrollPageTo(tab, m.prevY);
 
   // Trim to what was actually stitched, so an early stop yields a short correct
   // image instead of a tall one padded with blank space.

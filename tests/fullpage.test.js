@@ -39,7 +39,7 @@ function smoothEl(scrollHeight, clientHeight) {
 
 // background.js in a sandbox wired to a fake page. chrome.*, the canvas, and
 // the capture are all mocked — nothing real is touched.
-function load({ de, body, iw = 1512, ih = 767, dpr = 2 }) {
+function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, leaveAt = 0, leave = {} }) {
   const canvases = [];
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; this.draws = []; canvases.push(this); }
@@ -60,7 +60,8 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2 }) {
     console,
     URL, btoa, Date, clearTimeout,
     setTimeout: (fn) => fn(),      // collapse the settle sleeps so tests stay fast
-    document: { documentElement: de, body, scrollingElement: de, querySelectorAll: () => [] },
+    document: { documentElement: de, body, scrollingElement: de, querySelectorAll: () => fixed },
+    getComputedStyle: (e) => ({ position: fixed.includes(e) ? 'fixed' : 'static' }),
     window: {
       innerWidth: iw, innerHeight: ih, devicePixelRatio: dpr,
       // Faithful to the browser: window.scrollTo drives the document scroller.
@@ -81,8 +82,12 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2 }) {
       tabs: {
         captureVisibleTab: async () => {
           captureAt.push(Math.max(de ? de.scrollTop : 0, body ? body.scrollTop : 0));
+          if (captureAt.length === failAt) throw new Error('capture failed');
           return 'data:image/png;base64,AAAA';
         },
+        // From capture `leaveAt` on, the tab is no longer the one showing in
+        // window 9: `leave` says whether it was switched away from or moved.
+        get: async (id) => ({ id, windowId: 9, active: true, ...(leaveAt && captureAt.length >= leaveAt ? leave : {}) }),
       },
       runtime: { onMessage: { addListener() {} } },
       commands: { onCommand: { addListener() {} } },
@@ -228,4 +233,32 @@ test('stitches every screen of a smooth-scrolling page', async () => {
   const { ctx, captureAt } = load({ de: smoothEl(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(captureAt, [0, 800, 1600, 2200], 'stopped before the end of the page');
+});
+
+// --- a stitch that stops part-way ------------------------------------------
+// The page was only put back after the last slice, so a slice that threw left
+// it scrolled to wherever the stitch stopped, with its pinned headers hidden.
+// And each slice is a shot of whichever tab is showing in the window, so a
+// switch mid-stitch put the other tab into the image.
+
+test('puts the page back when a slice fails part-way', async () => {
+  const body = el(3052, 767);
+  body.scrollTop = 640;
+  const header = { style: { visibility: '' } };
+  const { ctx } = load({ de: el(767, 767), body, fixed: [header], failAt: 3 });
+  await assert.rejects(() => ctx.captureFullPage(TAB), /capture failed/);
+  assert.strictEqual(body.scrollTop, 640, 'left scrolled to where the stitch stopped');
+  assert.strictEqual(header.style.visibility, '', 'left the pinned header hidden');
+});
+
+test('stops rather than stitch in a tab the user switched to', async () => {
+  // Switched to another tab, or dragged this one out to another window.
+  for (const leave of [{ active: false }, { windowId: 4 }]) {
+    const body = el(3052, 767);
+    body.scrollTop = 640;
+    const { ctx, canvases } = load({ de: el(767, 767), body, leaveAt: 2, leave });
+    await assert.rejects(() => ctx.captureFullPage(TAB), /another tab is now showing/);
+    assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0], `stitched in the other tab after ${JSON.stringify(leave)}`);
+    assert.strictEqual(body.scrollTop, 640, 'the stopped stitch left the page scrolled');
+  }
 });
