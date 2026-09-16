@@ -30,5 +30,7 @@ There's no build step and nothing to install: Chrome runs the files in this fold
 
 Run the tests with `npm test`. They use Node's built-in test runner, live in `tests/`, and CI runs them on every push and pull request.
 
+To publish, run `npm run package`. It builds `viewshot.zip` in this folder, holding only the files the extension needs, for upload to the Chrome Web Store.
+
 ## License
 [GNU GPLv3](LICENSE) © John Pratt

@@ -47,9 +47,15 @@ test('the README lists exactly the permissions the manifest requests', () => {
 });
 
 // --- development --------------------------------------------------------
-// Nothing in the README said there were tests, let alone how to run them.
+// Nothing in the README said there were tests, let alone how to run them,
+// and the Web Store zip script arrived without a mention either.
 
 test('the README says how to run the tests', () => {
   assert.ok(pkg.scripts?.test, 'package.json has no test script for the README to point at');
   assert.ok(readme.includes('`npm test`'), 'the README never says to run `npm test`');
+});
+
+test('the README says how to build the Web Store zip', () => {
+  assert.ok(pkg.scripts?.package, 'package.json has no package script for the README to point at');
+  assert.ok(readme.includes('`npm run package`'), 'the README never says to run `npm run package`');
 });
