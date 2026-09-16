@@ -29,6 +29,7 @@ function loadBg({ scriptFails = false } = {}) {
         addListener: (fn) => listeners.push(fn),
         removeListener: (fn) => { const i = listeners.indexOf(fn); if (i !== -1) listeners.splice(i, 1); },
       },
+      onStartup: { addListener() {} }, onInstalled: { addListener() {} },
       sendMessage: async () => {},
     },
     commands: { onCommand: { addListener() {} } },

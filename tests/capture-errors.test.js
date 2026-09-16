@@ -35,7 +35,11 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
 
   const chrome = {
     // The first message listener is background.js's own; Region adds more later.
-    runtime: { onMessage: { addListener: (fn) => { onMessage = onMessage || fn; }, removeListener() {} }, sendMessage: async () => {} },
+    runtime: {
+      onMessage: { addListener: (fn) => { onMessage = onMessage || fn; }, removeListener() {} },
+      onStartup: { addListener() {} }, onInstalled: { addListener() {} },
+      sendMessage: async () => {},
+    },
     commands: { onCommand: { addListener: (fn) => { onCommand = fn; } } },
     tabs: {
       query: async () => (noActiveTab ? [] : [TAB]),

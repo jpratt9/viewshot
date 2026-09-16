@@ -11,10 +11,13 @@ const CODE = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8'
 // the action popup, so it must not outlive the work it was created for.
 function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
   const calls = { create: 0, close: 0, sent: [] };
+  const on = {}; // background.js's runtime.onStartup / onInstalled listeners
   let docExists = hasDoc;
   const chrome = {
     runtime: {
       onMessage: { addListener() {}, removeListener() {} },
+      onStartup: { addListener: (fn) => { on.onStartup = fn; } },
+      onInstalled: { addListener: (fn) => { on.onInstalled = fn; } },
       sendMessage: async (m) => {
         calls.sent.push(m);
         return m.type === 'offscreen-ping' ? 'pong' : 'done';
@@ -30,7 +33,12 @@ function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
       },
       closeDocument: async () => { calls.close++; docExists = false; },
     },
-    storage: { local: { get: async (k) => (k === 'rec' && rec ? { rec } : {}) } },
+    storage: {
+      local: {
+        get: async (k) => (k === 'rec' && rec ? { rec } : {}),
+        remove: async (k) => { if (k === 'rec') rec = null; },
+      },
+    },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };
   const context = {
@@ -39,7 +47,13 @@ function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
   };
   vm.createContext(context);
   vm.runInContext(CODE, context);
-  return { ctx: context, calls, docLives: () => docExists };
+  return {
+    ctx: context, calls, docLives: () => docExists,
+    fire: async (event, ...args) => {
+      assert.ok(on[event], `nothing listens for runtime.${event}`);
+      await on[event](...args);
+    },
+  };
 }
 
 const PNG = 'data:image/png;base64,AAAA';
@@ -79,6 +93,26 @@ test('leaves the document alone while a recording is running', async () => {
   assert.strictEqual(calls.close, 0, 'closing mid-recording would destroy the capture');
   assert.strictEqual(docLives(), true);
 });
+
+// --- unless the browser or the extension ended it -----------------------------
+// `rec` is kept in chrome.storage.local so a recording outlives a worker
+// restart. It also outlived Chrome quitting and the extension reloading, which
+// the recording itself doesn't, and nothing cleared it: the popup kept Stop
+// enabled, and this document was never closed after a clipboard copy again.
+
+const ENDINGS = [
+  ['onStartup', 'Chrome starting again', []],
+  ['onInstalled', 'the extension being installed, updated or reloaded', [{ reason: 'update' }]],
+];
+
+for (const [event, what, args] of ENDINGS) {
+  test(`${what} forgets a recording that couldn't survive it`, async () => {
+    const { ctx, calls, fire } = load({ rec: { format: 'webm', filename: 'x' } });
+    await fire(event, ...args);
+    await ctx.copyImage(PNG);
+    assert.strictEqual(calls.close, 1, 'the leftover recording still kept the document open');
+  });
+}
 
 test('closeOffscreen is a no-op when no document exists', async () => {
   const { calls, ctx } = load({ hasDoc: false });

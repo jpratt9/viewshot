@@ -20,6 +20,13 @@ chrome.commands.onCommand.addListener(async (cmd, tab) => {
   if (map[cmd]) runCapture(map[cmd], await getOpts(), tab?.id).catch(captureFailed);
 });
 
+// `rec` is kept in chrome.storage.local so a recording outlives a worker
+// restart. The recording itself lives in the offscreen document, which is gone
+// once Chrome restarts or the extension is installed, updated or reloaded, so
+// after either of those nothing is recording, whatever the key says.
+chrome.runtime.onStartup.addListener(() => chrome.storage.local.remove('rec'));
+chrome.runtime.onInstalled.addListener(() => chrome.storage.local.remove('rec'));
+
 async function getOpts() {
   const { opts } = await chrome.storage.local.get('opts');
   const o = { ...DEFAULTS, ...(opts || {}) };

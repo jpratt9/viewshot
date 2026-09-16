@@ -127,7 +127,7 @@ function loadBackground() {
   const queries = [];
   const deep = () => new Proxy(function () {}, { get: () => deep(), apply: () => undefined });
   const chrome = {
-    runtime: { onMessage: { addListener: (fn) => { listener = fn; } } },
+    runtime: { onMessage: { addListener: (fn) => { listener = fn; } }, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
     commands: { onCommand: { addListener() {} } },
     // No active tab, so runCapture gives up straight after this call - enough to
     // show it ran without dragging the whole capture pipeline in.
