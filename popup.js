@@ -159,6 +159,15 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
 });
 
 $('stopBtn').addEventListener('click', () => { if ($('stopBtn').disabled) return; chrome.runtime.sendMessage({ type: 'rec-stop' }); $('stopBtn').disabled = true; toggleRec(); });
+// A recording can also end without this Stop: the recorded tab closes, a GIF
+// reaches its frame cap, or the start fails in the offscreen document. The
+// worker removes `rec` then, so follow the key rather than only reading it in
+// load().
+chrome.storage.local.onChanged.addListener((changes) => {
+  if (!('rec' in changes)) return;
+  $('stopBtn').disabled = !changes.rec.newValue;
+  toggleRec();
+});
 
 $('format').addEventListener('change', () => { toggleQuality(); toggleRec(); save(); });
 $('quality').addEventListener('input', () => { $('qualityVal').textContent = Math.round($('quality').value * 100) + '%'; });

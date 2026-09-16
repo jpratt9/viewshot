@@ -236,6 +236,7 @@ test('recording a page that refuses scripts logs a warning, not an error', async
 function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {} } = {}) {
   const els = {};
   const sent = [];
+  let onStored; // popup.js's chrome.storage.local.onChanged listener
   const makeEl = () => {
     const el = {
       style: {}, dataset: {}, listeners: {},
@@ -264,7 +265,12 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {} }
     },
     chrome: {
       tabs: { query: async () => [{ id: 1, url, title: 'T' }], create: () => {} },
-      storage: { local: { get: async () => store, set: async () => {} } }, // `opts` and `rec`
+      storage: {
+        local: {
+          get: async () => store, set: async () => {}, // `opts` and `rec`
+          onChanged: { addListener: (fn) => { onStored = fn; } },
+        },
+      },
       runtime: { sendMessage: async (m) => { sent.push(m); return true; } },
       tabCapture: { getMediaStreamId: async () => { if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
@@ -279,6 +285,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {} }
     ready: settle, // let load() resolve so activeTab is populated
     click: (mode) => btn(mode).listeners.click[0](),
     stop: () => els.stopBtn.listeners.click[0](),
+    stored: (changes) => onStored?.(changes), // storage changing while the popup is open
   };
 }
 
@@ -790,4 +797,40 @@ test('a second start leaves a running GIF recording in place', async () => {
   await o.ctx.startRecording('sid2', 'webm', 100, 100);
   assert.strictEqual(vm.runInContext('rec', o.ctx), running, 'the GIF\'s frame timer now reads the new recording');
   assert.strictEqual(o.recorders.length, 0, 'a second recording was started');
+});
+
+// --- a recording that ends while the popup is open --------------------------
+// The popup read `rec` once, when it opened. A recording can end without its
+// Stop - the recorded tab closes, a GIF reaches its frame cap, a start fails in
+// the offscreen document - and the worker removes `rec` then, but an open
+// popup kept Stop enabled and Record greyed out until it was opened again.
+
+test('an open popup gives Record back when the recording ends on its own', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' }, rec: RUNNING } });
+  await p.ready();
+  p.stored({ rec: { oldValue: RUNNING } }); // stopRecording removed it
+  assert.strictEqual(p.els.stopBtn.disabled, true, 'Stop stayed enabled with nothing recording');
+  assert.strictEqual(p.btn('visible').disabled, false, 'Record stayed greyed out with nothing recording');
+  await p.click('visible');
+  assert.deepStrictEqual(p.sent.map((m) => m.type), ['rec-start']);
+});
+
+test('an open popup gives Record back when its start fails in the offscreen document', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' } } });
+  await p.ready();
+  await p.click('visible');
+  p.stored({ rec: { newValue: RUNNING } }); // the worker marks it as running
+  assert.strictEqual(p.els.stopBtn.disabled, false);
+  assert.strictEqual(p.btn('visible').disabled, true);
+  p.stored({ rec: { oldValue: RUNNING } }); // then rec-failed removes it
+  assert.strictEqual(p.els.stopBtn.disabled, true, 'Stop stayed enabled after the start failed');
+  assert.strictEqual(p.btn('visible').disabled, false, 'Record stayed greyed out after the start failed');
+});
+
+test('a settings change leaves an open popup\'s Stop and Record alone', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' }, rec: RUNNING } });
+  await p.ready();
+  p.stored({ opts: { newValue: { format: 'webm' } } }); // save() after a control changes
+  assert.strictEqual(p.els.stopBtn.disabled, false, 'Stop was greyed out mid-recording');
+  assert.strictEqual(p.btn('visible').disabled, true, 'Record came back mid-recording');
 });

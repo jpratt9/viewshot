@@ -191,7 +191,7 @@ function loadPopup() {
     },
     chrome: {
       tabs: { query: async () => [TAB], create: () => {} },
-      storage: { local: { get: async () => ({}), set: async () => {} } },
+      storage: { local: { get: async () => ({}), set: async () => {}, onChanged: { addListener() {} } } },
       runtime: { sendMessage: (m) => sent.push(m) },
       tabCapture: { getMediaStreamId: async () => 'sid' },
     },

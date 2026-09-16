@@ -64,6 +64,7 @@ function loadPopup(store = { opts: { format: 'jpg' } }) {
           return out;
         },
         set: async (o) => Object.assign(store, o),
+        onChanged: { addListener() {} },
       },
     },
     runtime: { sendMessage: (msg) => { sent.push(msg); return ack; } },

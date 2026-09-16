@@ -58,6 +58,7 @@ function bootPopup(store = {}, cache = null) {
           return out;
         },
         set: async (o) => Object.assign(store, o),
+        onChanged: { addListener() {} },
       },
     },
     runtime: { sendMessage: () => {} },
