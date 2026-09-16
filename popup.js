@@ -5,15 +5,16 @@ let activeTab = null;
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
 
-// Pages that aren't http(s), file, ftp or chrome:// are refused before anything
-// is sent: captures there failed in the worker, which threw into a console the
-// user never has open. chrome:// pages (the New Tab page is one) refuse
-// executeScript ("Cannot access a chrome:// URL"), which Full page and Region
-// need, but activeTab still lets Chrome capture and record them, so Visible
-// and Record go through.
+// Pages that aren't http(s), file, ftp, chrome://, another extension's page or
+// a data: URL are refused before anything is sent: captures there failed in the
+// worker, which threw into a console the user never has open. chrome:// pages
+// (the New Tab page is one), other extensions' pages and data: URLs all refuse
+// executeScript, which Full page and Region need, but activeTab still lets
+// Chrome capture and record them, so Visible and Record go through.
 // activeTab is null until load() resolves; the worker's badge covers that gap.
-const CAPTURABLE = /^(https?|file|ftp|chrome):/i;
+const CAPTURABLE = /^(https?|file|ftp|chrome|chrome-extension|data):/i;
 const CHROME_PAGE = /^chrome:/i;
+const EXTENSION_OR_DATA = /^(chrome-extension|data):/i;
 const uncapturable = (tab) => !!(tab && tab.url && !CAPTURABLE.test(tab.url));
 // Chrome never lets an extension script the Web Store (all of chrome.google.com
 // and chromewebstore.google.com), so Full page and Region can't run there.
@@ -122,6 +123,10 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
       }
       if (btn.dataset.mode !== 'visible' && CHROME_PAGE.test(activeTab?.url || '')) {
         showError('Chrome doesn’t let extensions run Full page or Region on chrome:// pages. Visible still works here.');
+        return; // keep the popup open so the error is visible
+      }
+      if (btn.dataset.mode !== 'visible' && EXTENSION_OR_DATA.test(activeTab?.url || '')) {
+        showError('Chrome doesn’t let extensions run Full page or Region on other extensions’ pages or data: URLs. Visible still works here.');
         return; // keep the popup open so the error is visible
       }
       await save();

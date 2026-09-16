@@ -268,8 +268,8 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false } = {}) {
   };
 }
 
-test('refuses other extensions\' pages, devtools and about:blank', async () => {
-  for (const url of ['chrome-extension://abc/page.html', 'devtools://devtools/bundled/x.html', 'about:blank']) {
+test('refuses devtools, chrome-untrusted:// and about:blank pages', async () => {
+  for (const url of ['devtools://devtools/bundled/x.html', 'chrome-untrusted://print/', 'about:blank']) {
     for (const mode of ['visible', 'region']) {
       const p = loadPopup(url);
       await p.ready();
@@ -333,7 +333,7 @@ test('records on chrome:// pages', async () => {
 
 test('the refusal messages no longer steer the user away from chrome:// pages or the Web Store', async () => {
   // Visible and Record work on both.
-  const page = loadPopup('chrome-extension://abc/page.html');
+  const page = loadPopup('devtools://devtools/bundled/x.html');
   await page.ready();
   await page.click('visible');
   assert.strictEqual(page.els.err.hidden, false);
@@ -346,6 +346,47 @@ test('the refusal messages no longer steer the user away from chrome:// pages or
   assert.deepStrictEqual(rec.sent, [], 'a recording started without a stream id');
   assert.strictEqual(rec.els.err.hidden, false);
   assert.doesNotMatch(rec.els.err.textContent, /chrome:\/\/|Web Store/);
+});
+
+// --- other extensions' pages and data: URLs ----------------------------------
+// Chrome refuses executeScript on these too, and once the popup has granted
+// activeTab it lets captureVisibleTab and tabCapture through, as on chrome://
+// pages. The popup still refused every mode there.
+
+const EXTENSION_AND_DATA_URLS = ['chrome-extension://abc/page.html', 'data:text/html,<p>x</p>'];
+
+test('takes a Visible screenshot of other extensions\' pages and data: URLs', async () => {
+  for (const url of EXTENSION_AND_DATA_URLS) {
+    const p = loadPopup(url);
+    await p.ready();
+    await p.click('visible');
+    assert.deepStrictEqual(p.sent.map((m) => m.type), ['capture'], `Visible on ${url} was wrongly blocked`);
+  }
+});
+
+test('refuses Full page and Region on other extensions\' pages and data: URLs with a message', async () => {
+  for (const url of EXTENSION_AND_DATA_URLS) {
+    for (const mode of ['fullpage', 'region']) {
+      const p = loadPopup(url);
+      await p.ready();
+      await p.click(mode);
+      assert.deepStrictEqual(p.sent, [], `${mode} on ${url} was sent to the worker`);
+      assert.strictEqual(p.els.err.hidden, false);
+      assert.match(p.els.err.textContent, /Full page or Region on other extensions’ pages or data: URLs\. Visible still works/);
+    }
+  }
+});
+
+test('records on other extensions\' pages and data: URLs', async () => {
+  for (const url of EXTENSION_AND_DATA_URLS) {
+    for (const format of ['webm', 'gif']) {
+      const p = loadPopup(url);
+      await p.ready();
+      p.els.format.value = format; // turns Visible into Record
+      await p.click('visible');
+      assert.deepStrictEqual(p.sent.map((m) => m.type), ['rec-start'], `recording ${url} as ${format} was blocked`);
+    }
+  }
 });
 
 // --- pages that pass the scheme check but still can't be captured ---------
