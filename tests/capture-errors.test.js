@@ -163,7 +163,7 @@ test('recording a page that refuses scripts logs a warning, not an error', async
 
 // --- the popup says which page it was --------------------------------------
 
-function loadPopup(url, { fileAccess = true } = {}) {
+function loadPopup(url, { fileAccess = true, streamIdFails = false } = {}) {
   const els = {};
   const sent = [];
   const makeEl = () => {
@@ -193,7 +193,7 @@ function loadPopup(url, { fileAccess = true } = {}) {
       tabs: { query: async () => [{ id: 1, url, title: 'T' }], create: () => {} },
       storage: { local: { get: async () => ({}), set: async () => {} } },
       runtime: { sendMessage: async (m) => { sent.push(m); return true; } },
-      tabCapture: { getMediaStreamId: async () => 'sid' },
+      tabCapture: { getMediaStreamId: async () => { if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
     },
     localStorage: { getItem: () => null, setItem: () => {} },
@@ -207,21 +207,15 @@ function loadPopup(url, { fileAccess = true } = {}) {
   };
 }
 
-test('refuses a chrome:// page with a message rather than a silent no-op', async () => {
-  const p = loadPopup('chrome://extensions/');
-  await p.ready();
-  await p.click('visible');
-  assert.deepStrictEqual(p.sent, [], 'the worker was asked to capture a page it cannot touch');
-  assert.strictEqual(p.els.err.hidden, false);
-  assert.match(p.els.err.textContent, /chrome:\/\//);
-});
-
 test('refuses the extension gallery and devtools too', async () => {
   for (const url of ['chrome-extension://abc/page.html', 'devtools://devtools/bundled/x.html', 'about:blank']) {
-    const p = loadPopup(url);
-    await p.ready();
-    await p.click('region');
-    assert.deepStrictEqual(p.sent, [], `${url} was allowed through`);
+    for (const mode of ['visible', 'region']) {
+      const p = loadPopup(url);
+      await p.ready();
+      await p.click(mode);
+      assert.deepStrictEqual(p.sent, [], `${mode} on ${url} was allowed through`);
+      assert.strictEqual(p.els.err.hidden, false, `${mode} on ${url} was refused without a message`);
+    }
   }
 });
 
@@ -232,6 +226,63 @@ test('lets an ordinary page through untouched', async () => {
     await p.click('visible');
     assert.deepStrictEqual(p.sent.map((m) => m.type), ['capture'], `${url} was wrongly blocked`);
   }
+});
+
+// --- chrome:// pages ---------------------------------------------------------
+// Chrome refuses executeScript on chrome:// pages, but once the popup has
+// granted activeTab it lets captureVisibleTab through. The popup refused every
+// mode there, so the one capture Chrome allows never reached the worker.
+
+const CHROME_URLS = ['chrome://extensions/', 'chrome://version/', 'chrome://newtab/'];
+
+test('takes a Visible screenshot of chrome:// pages', async () => {
+  for (const url of CHROME_URLS) {
+    const p = loadPopup(url);
+    await p.ready();
+    await p.click('visible');
+    assert.deepStrictEqual(p.sent.map((m) => m.type), ['capture'], `Visible on ${url} was wrongly blocked`);
+  }
+});
+
+test('refuses Full page and Region on chrome:// pages with a message rather than a silent no-op', async () => {
+  for (const url of CHROME_URLS) {
+    for (const mode of ['fullpage', 'region']) {
+      const p = loadPopup(url);
+      await p.ready();
+      await p.click(mode);
+      assert.deepStrictEqual(p.sent, [], `${mode} on ${url} was sent to the worker`);
+      assert.strictEqual(p.els.err.hidden, false);
+      assert.match(p.els.err.textContent, /Full page or Region on chrome:\/\/ pages\. Visible still works/);
+    }
+  }
+});
+
+test('still refuses Record on chrome:// pages', async () => {
+  for (const url of CHROME_URLS) {
+    const p = loadPopup(url);
+    await p.ready();
+    p.els.format.value = 'webm'; // turns Visible into Record
+    await p.click('visible');
+    assert.deepStrictEqual(p.sent, [], `recording ${url} was sent to the worker`);
+    assert.strictEqual(p.els.err.hidden, false);
+  }
+});
+
+test('the refusal messages no longer steer the user away from chrome:// pages or the Web Store', async () => {
+  // Visible works on both, and Record works on the Web Store.
+  const page = loadPopup('chrome-extension://abc/page.html');
+  await page.ready();
+  await page.click('visible');
+  assert.strictEqual(page.els.err.hidden, false);
+  assert.doesNotMatch(page.els.err.textContent, /chrome:\/\/|Web Store/);
+
+  const rec = loadPopup('https://a.com/x', { streamIdFails: true });
+  await rec.ready();
+  rec.els.format.value = 'webm'; // turns Visible into Record
+  await rec.click('visible');
+  assert.deepStrictEqual(rec.sent, [], 'a recording started without a stream id');
+  assert.strictEqual(rec.els.err.hidden, false);
+  assert.doesNotMatch(rec.els.err.textContent, /chrome:\/\/|Web Store/);
 });
 
 // --- pages that pass the scheme check but still can't be captured ---------

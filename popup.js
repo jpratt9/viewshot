@@ -5,12 +5,16 @@ let activeTab = null;
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
 
-// chrome://, extension pages, devtools and the New Tab page refuse both
-// executeScript and captureVisibleTab, so every mode fails on them - the worker
-// threw "Cannot access a chrome:// URL" into a console the user never has open.
+// Pages that aren't http(s), file or ftp are refused before anything is sent:
+// captures there failed in the worker, which threw into a console the user
+// never has open ("Cannot access a chrome:// URL"). A Visible screenshot of a
+// chrome:// page (the New Tab page is one) is let through: Chrome refuses
+// executeScript there, which Full page and Region need, but activeTab still
+// lets it capture the page.
 // activeTab is null until load() resolves; the worker's badge covers that gap.
 const CAPTURABLE = /^(https?|file|ftp):/i;
-const uncapturable = (tab) => !!(tab && tab.url && !CAPTURABLE.test(tab.url));
+const CHROME_PAGE = /^chrome:/i;
+const uncapturable = (tab, rec) => !!(tab && tab.url && !CAPTURABLE.test(tab.url) && (rec || !CHROME_PAGE.test(tab.url)));
 // Chrome never lets an extension script the Web Store (all of chrome.google.com
 // and chromewebstore.google.com), so Full page and Region can't run there.
 // Visible still can: Chrome lets activeTab capture the store.
@@ -84,8 +88,8 @@ function toggleRec() {
 document.querySelectorAll('#modes .mode').forEach((btn) => {
   btn.addEventListener('click', async () => {
     if (btn.disabled) return;
-    if (uncapturable(activeTab)) {
-      showError('Can’t capture this page. Open a normal http(s) page (not chrome://, the Web Store, or a new tab) and try again.');
+    if (uncapturable(activeTab, isRecFmt($('format').value))) {
+      showError('Can’t capture this page. Open a normal http(s) page and try again.');
       return; // keep the popup open so the error is visible
     }
     const opts = read();
@@ -98,7 +102,7 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
         streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: activeTab.id });
       } catch (e) {
         console.error('[ViewShot] getMediaStreamId failed:', e);
-        showError('Can’t record this tab. Open a normal http(s) page (not chrome://, the Web Store, or a new tab) and try again.');
+        showError('Can’t record this tab. Open a normal http(s) page and try again.');
         return; // keep the popup open so the error is visible
       }
       await save();
@@ -114,6 +118,10 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
       }
       if (btn.dataset.mode !== 'visible' && WEB_STORE.test(activeTab?.url || '')) {
         showError('Chrome doesn’t let extensions run Full page or Region on the Web Store. Visible still works here.');
+        return; // keep the popup open so the error is visible
+      }
+      if (btn.dataset.mode !== 'visible' && CHROME_PAGE.test(activeTab?.url || '')) {
+        showError('Chrome doesn’t let extensions run Full page or Region on chrome:// pages. Visible still works here.');
         return; // keep the popup open so the error is visible
       }
       await save();
