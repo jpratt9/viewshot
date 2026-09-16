@@ -99,7 +99,7 @@ async function startRecording(streamId, format, width, height) {
     // dropped the last second of every recording on the floor.
     const chunks = [];
     rec.chunks = chunks;
-    const mime = pickWebmMime();
+    const mime = pickMime(format);
     log('starting MediaRecorder, mime=', mime);
     rec.recorder = new MediaRecorder(stream, { mimeType: mime });
     rec.recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
@@ -135,7 +135,7 @@ function stopRecording(filename) {
     // completes — track-stopping waits for `stop` too.
     const { recorder, chunks, stopped } = rec;
     stopped.then(() => {
-      download(new Blob(chunks, { type: 'video/webm' }), filename);
+      download(new Blob(chunks, { type: `video/${format}` }), filename);
       stream.getTracks().forEach((t) => t.stop());
     });
     // Already inactive if the track ended first: there is nothing left to stop.
@@ -144,9 +144,13 @@ function stopRecording(filename) {
   }
 }
 
-function pickWebmMime() {
-  const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
-  return types.find((t) => MediaRecorder.isTypeSupported(t)) || 'video/webm';
+// MP4 is there for QuickTime Player, which can't open WebM, so it names H.264
+// (avc1), the codec QuickTime plays.
+function pickMime(format) {
+  const types = format === 'mp4'
+    ? ['video/mp4;codecs=avc1', 'video/mp4']
+    : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  return types.find((t) => MediaRecorder.isTypeSupported(t)) || `video/${format}`;
 }
 
 function download(blob, filename) {

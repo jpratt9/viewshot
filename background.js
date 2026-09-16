@@ -96,8 +96,8 @@ async function runCapture(mode, opts) {
 async function encode(pngDataUrl, opts) {
   const mimes = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' };
   // The shortcuts pass the stored format as-is, and the popup can leave that
-  // on webm or gif. Those still get a PNG, so name the file .png as well
-  // rather than asking for PNG data to be saved as .webm or .gif.
+  // on webm, mp4 or gif. Those still get a PNG, so name the file .png as well
+  // rather than asking for PNG data to be saved as .webm, .mp4 or .gif.
   const ext = mimes[opts.format] ? opts.format : 'png';
   const mime = mimes[ext];
   const bmp = await createImageBitmap(await (await fetch(pngDataUrl)).blob());
@@ -353,7 +353,7 @@ async function copyImage(pngDataUrl) {
   }
 }
 
-// ---- record the visible tab to WebM/GIF via the offscreen document ----
+// ---- record the visible tab to WebM/MP4/GIF via the offscreen document ----
 const log = (...a) => console.log('[ViewShot]', ...a);
 
 async function flashBadge(text) {

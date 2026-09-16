@@ -117,7 +117,7 @@ test('the default format is a still format the UI offers, never a recording one'
   const still = stillFormatsFromMarkup();
   assert.ok(still.includes(bg.DEFAULTS.format),
     `DEFAULTS.format ${bg.DEFAULTS.format} is not one of ${still.join(', ')}`);
-  assert.ok(!['webm', 'gif'].includes(bg.DEFAULTS.format),
+  assert.ok(!['webm', 'mp4', 'gif'].includes(bg.DEFAULTS.format),
     'a recording format as the default would make the keyboard shortcuts write image bytes into a video file');
 });
 

@@ -1,6 +1,6 @@
 const DEFAULTS = { format: 'jpg', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true };
 const $ = (id) => document.getElementById(id);
-const isRecFmt = (f) => f === 'webm' || f === 'gif';
+const isRecFmt = (f) => f === 'webm' || f === 'mp4' || f === 'gif';
 let activeTab = null;
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };

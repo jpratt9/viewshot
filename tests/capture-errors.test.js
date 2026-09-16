@@ -353,7 +353,7 @@ function loadOffscreen() {
   const recorders = [];
   const downloads = [];
   class FakeRecorder {
-    constructor() { this.state = 'recording'; recorders.push(this); }
+    constructor(stream, { mimeType } = {}) { this.mimeType = mimeType; this.state = 'recording'; recorders.push(this); }
     start() {}
     // Mirrors the real ordering: a final dataavailable, then onstop, both async.
     stop() { this.state = 'inactive'; }
@@ -373,7 +373,7 @@ function loadOffscreen() {
     },
     navigator: { mediaDevices: { getUserMedia: async () => stream } },
     MediaRecorder: FakeRecorder,
-    Blob: class { constructor(parts) { this.parts = parts; this.size = parts.length; } },
+    Blob: class { constructor(parts, { type } = {}) { this.parts = parts; this.size = parts.length; this.type = type; } },
     URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
     document: {
       createElement: () => ({ style: {}, click() {}, remove() {}, appendChild() {} }),
@@ -456,4 +456,50 @@ test('a tab-closed recording waits for a stop that is still on its way', async (
   await settle();
   assert.strictEqual(o.downloads.length, 1, 'the recording was never saved');
   assert.strictEqual(o.downloads[0][0].parts.length, 2, 'the saved recording is missing its final chunk');
+});
+
+// --- MP4 recordings ----------------------------------------------------------
+// QuickTime Player can't open WebM, so MP4 is offered as a third recording
+// format. It names H.264 for MediaRecorder, and the rest of the path - chunks,
+// stop, save - is the one WebM already takes.
+
+test('Record with MP4 selected starts an MP4 recording', async () => {
+  const p = loadPopup('https://a.com/x');
+  await p.ready();
+  p.els.format.value = 'mp4'; // turns Visible into Record
+  await p.click('visible');
+  assert.deepStrictEqual(p.sent.map((m) => m.type), ['rec-start'], 'MP4 was taken for a screenshot format');
+  assert.strictEqual(p.sent[0].opts.format, 'mp4');
+});
+
+test('an MP4 recording asks for H.264 and is saved as video/mp4', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'mp4', 100, 100);
+  const r = o.recorders[0];
+  assert.strictEqual(r.mimeType, 'video/mp4;codecs=avc1');
+  r.flush({ size: 10 });
+  o.ctx.stopRecording('out.mp4');
+  r.finish();
+  await settle();
+  assert.strictEqual(o.downloads.length, 1, 'the recording was never saved');
+  assert.strictEqual(o.downloads[0][0].type, 'video/mp4');
+  assert.strictEqual(o.downloads[0][1], 'out.mp4');
+});
+
+test('an MP4 recording falls back to plain video/mp4 where H.264 isn\'t supported', async () => {
+  const o = loadOffscreen();
+  o.ctx.MediaRecorder.isTypeSupported = (t) => t !== 'video/mp4;codecs=avc1';
+  await o.ctx.startRecording('sid', 'mp4', 100, 100);
+  assert.strictEqual(o.recorders[0].mimeType, 'video/mp4');
+});
+
+test('a WebM recording still asks for VP9 and is saved as video/webm', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  assert.strictEqual(o.recorders[0].mimeType, 'video/webm;codecs=vp9');
+  o.recorders[0].flush({ size: 10 });
+  o.ctx.stopRecording('out.webm');
+  o.recorders[0].finish();
+  await settle();
+  assert.strictEqual(o.downloads[0][0].type, 'video/webm');
 });

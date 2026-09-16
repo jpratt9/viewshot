@@ -8,7 +8,7 @@ const read = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
 const settle = () => new Promise((r) => setImmediate(r));
 
 // --- screenshot shortcuts with a recording format selected --------------
-// The popup never takes a screenshot in WebM or GIF: it turns Visible into
+// The popup never takes a screenshot in WebM, MP4 or GIF: it turns Visible into
 // Record and disables the other two modes. The shortcuts read the same
 // stored format with no such check, and encode() fell back to PNG data but
 // still named the file after the format, so Alt+Shift+V asked for a PNG to
@@ -53,7 +53,7 @@ async function pressShortcut(command, format) {
   return downloads;
 }
 
-for (const format of ['webm', 'gif']) {
+for (const format of ['webm', 'mp4', 'gif']) {
   test(`a screenshot shortcut with ${format} selected downloads a PNG named .png`, async () => {
     const downloads = await pressShortcut('capture-visible', format);
     assert.strictEqual(downloads.length, 1, 'the shortcut should still take the screenshot');
