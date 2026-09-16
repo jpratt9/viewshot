@@ -95,14 +95,18 @@ async function runCapture(mode, opts) {
 // ---- re-encode to chosen format/quality via OffscreenCanvas ----
 async function encode(pngDataUrl, opts) {
   const mimes = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' };
-  const mime = mimes[opts.format] || 'image/png';
+  // The shortcuts pass the stored format as-is, and the popup can leave that
+  // on webm or gif. Those still get a PNG, so name the file .png as well
+  // rather than asking for PNG data to be saved as .webm or .gif.
+  const ext = mimes[opts.format] ? opts.format : 'png';
+  const mime = mimes[ext];
   const bmp = await createImageBitmap(await (await fetch(pngDataUrl)).blob());
   const canvas = new OffscreenCanvas(bmp.width, bmp.height);
   const ctx = canvas.getContext('2d');
   if (mime === 'image/jpeg') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
   ctx.drawImage(bmp, 0, 0);
   const blob = await canvas.convertToBlob(mime === 'image/png' ? { type: mime } : { type: mime, quality: opts.quality });
-  return { dataUrl: await blobToDataURL(blob), ext: opts.format };
+  return { dataUrl: await blobToDataURL(blob), ext };
 }
 
 // The document is not always what scrolls. `html,body{height:100%}` plus any
