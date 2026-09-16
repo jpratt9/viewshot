@@ -14,13 +14,27 @@ function el(scrollHeight, clientHeight) {
     scrollHeight, clientHeight,
     get scrollTop() { return top; },
     set scrollTop(v) { top = Math.max(0, Math.min(v, Math.max(0, scrollHeight - clientHeight))); },
+    scrollTo(o) { this.scrollTop = o.top; },
   };
 }
 
 // Reports overflow but refuses to move: an overlay-locked page, or a scroller
 // nested somewhere we can't reach.
 function lockedEl(scrollHeight, clientHeight) {
-  return { scrollHeight, clientHeight, get scrollTop() { return 0; }, set scrollTop(_v) {} };
+  return { scrollHeight, clientHeight, get scrollTop() { return 0; }, set scrollTop(_v) {}, scrollTo() {} };
+}
+
+// A scroller with `scroll-behavior: smooth`: a scrollTop write or a default
+// scrollTo only starts an animation, so the offset still reads the old value
+// straight after. Only `behavior: 'instant'` moves it at once.
+function smoothEl(scrollHeight, clientHeight) {
+  const real = el(scrollHeight, clientHeight);
+  return {
+    scrollHeight, clientHeight,
+    get scrollTop() { return real.scrollTop; },
+    set scrollTop(_v) {},
+    scrollTo(o) { if (o.behavior === 'instant') real.scrollTop = o.top; },
+  };
 }
 
 // background.js in a sandbox wired to a fake page. chrome.*, the canvas, and
@@ -52,7 +66,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2 }) {
       // Faithful to the browser: window.scrollTo drives the document scroller.
       // It therefore does nothing when html is pinned to the viewport height,
       // which is exactly the case that broke.
-      scrollTo: (_x, y) => { if (de) de.scrollTop = y; },
+      scrollTo: (x, y) => { if (de) de.scrollTo(typeof x === 'object' ? x : { left: x, top: y }); },
     },
     OffscreenCanvas: FakeCanvas,
     createImageBitmap: async () => ({ width: iw * dpr, height: ih * dpr }),
@@ -187,4 +201,31 @@ test('restores the original scroll offset when done', async () => {
   const { ctx } = load({ de: el(767, 767), body });
   await ctx.captureFullPage(TAB);
   assert.strictEqual(body.scrollTop, 640);
+});
+
+// --- pages with smooth scrolling -------------------------------------------
+// Bootstrap 5 and Tailwind's scroll-smooth put `scroll-behavior: smooth` on the
+// root. A scroll there only starts an animation, so the offset read straight
+// after was still the old one, the second slice looked stuck, and Full page
+// saved the first screen alone.
+
+test('scrolling a smooth-scrolling page lands before it reports', () => {
+  const de = smoothEl(3000, 800);
+  const { ctx } = load({ de, body: el(3000, 3000), ih: 800, dpr: 1 });
+  assert.strictEqual(ctx.scrollAndReport(1600), 1600);
+  assert.strictEqual(de.scrollTop, 1600);
+});
+
+test('a smooth-scrolling body scroller also lands before it reports', () => {
+  // html,body{height:100%;overflow-x:hidden} with body{scroll-behavior:smooth}.
+  const body = smoothEl(3052, 767);
+  const { ctx } = load({ de: el(767, 767), body });
+  assert.strictEqual(ctx.scrollAndReport(1534), 1534);
+  assert.strictEqual(body.scrollTop, 1534);
+});
+
+test('stitches every screen of a smooth-scrolling page', async () => {
+  const { ctx, captureAt } = load({ de: smoothEl(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 800, 1600, 2200], 'stopped before the end of the page');
 });

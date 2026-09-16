@@ -135,8 +135,11 @@ function scrollAndReport(to) {
   const el = de.scrollHeight > de.clientHeight + 1 ? de
            : (b && b.scrollHeight > b.clientHeight + 1) ? b
            : (document.scrollingElement || de);
-  el.scrollTop = to;
-  window.scrollTo(0, to); // no-op unless the document itself is the scroller
+  // 'instant' overrides a page's `scroll-behavior: smooth` (Bootstrap 5,
+  // Tailwind's scroll-smooth). Without it the scroll animates, the read below
+  // still sees the old offset, and the stitch stops after the first screen.
+  el.scrollTo({ top: to, behavior: 'instant' });
+  window.scrollTo({ left: 0, top: to, behavior: 'instant' }); // no-op unless the document itself is the scroller
   return el.scrollTop;
 }
 
