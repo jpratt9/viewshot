@@ -388,6 +388,10 @@ async function flashBadge(text) {
 
 async function startRecording(streamId, opts, tabId) {
   log('rec-start received, opts=', opts, 'streamId=', streamId);
+  // One recording at a time. Starting another would overwrite `rec`, and the
+  // offscreen document would lose the recording already running.
+  const { rec } = await chrome.storage.local.get('rec');
+  if (rec) { console.warn('[ViewShot] a recording is already running; not starting another'); return; }
   // The stream id is minted in the popup (under its user gesture); we just wire
   // it to the offscreen recorder, which is the only context with media APIs.
   const tab = await getActiveTab(tabId); // the tab the popup minted the stream id for

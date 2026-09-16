@@ -53,9 +53,10 @@ async function load() {
     chrome.storage.local.get(['opts', 'rec']),
   ]);
   [activeTab] = tabs;
-  apply(migrate({ ...DEFAULTS, ...(stored.opts || {}) }));
   // The Stop button stays greyed out unless a recording is actually running.
+  // Set before apply(), whose toggleRec() greys Record out from it.
   $('stopBtn').disabled = !stored.rec;
+  apply(migrate({ ...DEFAULTS, ...(stored.opts || {}) }));
 }
 
 function read() {
@@ -78,11 +79,14 @@ const toggleQuality = () => { $('qualityRow').style.display = (['jpg', 'webp'].i
 
 // Recording captures the whole visible tab, so full-page/region don't apply —
 // disable them and relabel the "Visible" button as "Record" for video formats.
+// Record is greyed out too while a recording runs (Stop enabled): a second
+// start would record over that one, and it would be lost.
 function toggleRec() {
   const rec = isRecFmt($('format').value);
   const vis = document.querySelector('.mode[data-mode="visible"]');
   vis.querySelector('.lbl').textContent = rec ? 'Record' : 'Visible';
   vis.querySelector('.ico').textContent = rec ? '●' : '▢';
+  vis.disabled = rec && !$('stopBtn').disabled;
   document.querySelectorAll('.mode[data-mode="fullpage"], .mode[data-mode="region"]').forEach((b) => { b.disabled = rec; });
 }
 
@@ -95,6 +99,9 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
     }
     const opts = read();
     if (isRecFmt(opts.format)) {
+      // Greyed out before the first await: a second press while this one waits
+      // would start a second recording over it.
+      btn.disabled = true;
       // Mint the capture stream id HERE, while the click's user gesture is still
       // live — getMediaStreamId rejects without it, and the background worker
       // (a plain message handler) has no gesture to offer.
@@ -104,6 +111,7 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
       } catch (e) {
         console.error('[ViewShot] getMediaStreamId failed:', e);
         showError('Can’t record this tab. Open a normal http(s) page and try again.');
+        toggleRec(); // nothing is recording, so Record comes back
         return; // keep the popup open so the error is visible
       }
       await save();
@@ -150,7 +158,7 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
   });
 });
 
-$('stopBtn').addEventListener('click', () => { if ($('stopBtn').disabled) return; chrome.runtime.sendMessage({ type: 'rec-stop' }); $('stopBtn').disabled = true; });
+$('stopBtn').addEventListener('click', () => { if ($('stopBtn').disabled) return; chrome.runtime.sendMessage({ type: 'rec-stop' }); $('stopBtn').disabled = true; toggleRec(); });
 
 $('format').addEventListener('change', () => { toggleQuality(); toggleRec(); save(); });
 $('quality').addEventListener('input', () => { $('qualityVal').textContent = Math.round($('quality').value * 100) + '%'; });

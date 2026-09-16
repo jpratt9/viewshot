@@ -29,6 +29,9 @@ const GIF_MAX_FRAMES = 600; // ~60s cap so addFrame copies don't exhaust memory
 let rec = null; // { stream, format, recorder?, chunks?, gif?, timer?, frames? }
 
 async function startRecording(streamId, format, width, height) {
+  // One recording at a time: replacing `rec` would leave the one already
+  // running with nothing that can stop or save it.
+  if (rec) { console.warn('[ViewShot] a recording is already running; not starting another'); return; }
   // tabCapture ids are redeemed only through this legacy constraints form.
   // Pin min/max width+height to the actual tab dims so Chrome's tabCapture
   // pipeline doesn't letterbox the output (default behavior is to scale to a

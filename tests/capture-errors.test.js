@@ -233,7 +233,7 @@ test('recording a page that refuses scripts logs a warning, not an error', async
 
 // --- the popup says which page it was --------------------------------------
 
-function loadPopup(url, { fileAccess = true, streamIdFails = false } = {}) {
+function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {} } = {}) {
   const els = {};
   const sent = [];
   const makeEl = () => {
@@ -251,17 +251,20 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false } = {}) {
     el.dataset.mode = m;
     return el;
   });
+  els.stopBtn = makeEl();
+  els.stopBtn.disabled = true; // as popup.html has it
   const context = {
     console: { ...console, error: () => {} }, Math, parseFloat, JSON,
     window: { close: () => {} },
     document: {
       getElementById: (id) => (els[id] = els[id] || makeEl()),
-      querySelector: () => makeEl(),
+      // toggleRec() asks for the Visible/Record button: hand back the one the test clicks.
+      querySelector: (sel) => modes.find((b) => sel.includes(`"${b.dataset.mode}"`)) || makeEl(),
       querySelectorAll: (sel) => (sel.includes('#modes') ? modes : []),
     },
     chrome: {
       tabs: { query: async () => [{ id: 1, url, title: 'T' }], create: () => {} },
-      storage: { local: { get: async () => ({}), set: async () => {} } },
+      storage: { local: { get: async () => store, set: async () => {} } }, // `opts` and `rec`
       runtime: { sendMessage: async (m) => { sent.push(m); return true; } },
       tabCapture: { getMediaStreamId: async () => { if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
@@ -270,10 +273,12 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false } = {}) {
   };
   vm.createContext(context);
   vm.runInContext(read('popup.js'), context);
+  const btn = (mode) => modes.find((b) => b.dataset.mode === mode);
   return {
-    els, sent,
+    els, sent, btn,
     ready: settle, // let load() resolve so activeTab is populated
-    click: (mode) => modes.find((b) => b.dataset.mode === mode).listeners.click[0](),
+    click: (mode) => btn(mode).listeners.click[0](),
+    stop: () => els.stopBtn.listeners.click[0](),
   };
 }
 
@@ -697,4 +702,92 @@ test('a recording whose tab has since closed sets nothing up', async () => {
   await settle();
   assert.strictEqual(stored.length, 0, 'marked as recording with nothing recording');
   assert.deepStrictEqual(bg.badges, [], 'REC went up for a recording that never started');
+});
+
+// --- a second recording started over the first ------------------------------
+// Record stayed enabled while a recording ran, and nothing further along
+// checked either: the worker overwrote `rec`, and the offscreen document
+// replaced its own `rec`, leaving the recording already running with nothing
+// that could stop or save it. Stop then saved only the second recording.
+
+const RUNNING = { url: 'https://b.com', title: 'B', format: 'webm', filename: 'y' };
+
+test('Record is greyed out while a recording is running', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' }, rec: RUNNING } });
+  await p.ready();
+  assert.strictEqual(p.btn('visible').disabled, true, 'Record was left enabled over a running recording');
+  await p.click('visible');
+  assert.deepStrictEqual(p.sent, [], 'a second recording was started');
+});
+
+test('Visible still takes a screenshot while a recording is running', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'png' }, rec: RUNNING } });
+  await p.ready();
+  await p.click('visible');
+  assert.deepStrictEqual(p.sent.map((m) => m.type), ['capture']);
+});
+
+test('Record stays greyed out once it has started a recording, until Stop', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' } } });
+  await p.ready();
+  await p.click('visible');
+  assert.strictEqual(p.btn('visible').disabled, true, 'Record was left enabled over the recording it started');
+  await p.click('visible');
+  p.stop();
+  assert.strictEqual(p.btn('visible').disabled, false, 'Stop left Record greyed out');
+  await p.click('visible');
+  assert.deepStrictEqual(p.sent.map((m) => m.type), ['rec-start', 'rec-stop', 'rec-start']);
+});
+
+test('pressing Record twice in quick succession starts one recording', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' } } });
+  await p.ready();
+  await Promise.all([p.click('visible'), p.click('visible')]);
+  assert.deepStrictEqual(p.sent.map((m) => m.type), ['rec-start'], 'the second press started another recording');
+});
+
+test('Record comes back when the tab can\'t be recorded', async () => {
+  const p = loadPopup('https://a.com/x', { streamIdFails: true, store: { opts: { format: 'webm' } } });
+  await p.ready();
+  await p.click('visible');
+  assert.strictEqual(p.els.err.hidden, false);
+  assert.strictEqual(p.btn('visible').disabled, false, 'a start that failed left Record greyed out');
+});
+
+test('the worker won\'t start a recording over one that is running', async () => {
+  const bg = loadBg();
+  const { chrome } = bg.ctx;
+  const stored = [];
+  const sent = [];
+  chrome.offscreen = { hasDocument: async () => true }; // open, and recording
+  chrome.storage.local.get = async () => ({ rec: RUNNING });
+  chrome.storage.local.set = async (o) => { stored.push(o); };
+  chrome.runtime.sendMessage = async (m) => { sent.push(m); };
+  bg.message({ type: 'rec-start', streamId: 'sid2', opts: { ...OPTS, format: 'gif' }, tabId: TAB.id });
+  await settle();
+  assert.deepStrictEqual(stored, [], 'the running recording\'s `rec` was overwritten');
+  assert.deepStrictEqual(sent, [], 'the offscreen document was told to start another recording');
+});
+
+test('a second start leaves a running WebM recording to be saved', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const first = o.recorders[0];
+  first.flush({ size: 10 });
+  await o.ctx.startRecording('sid2', 'webm', 100, 100);
+  assert.strictEqual(o.recorders.length, 1, 'a second recorder was started over the first');
+  o.ctx.stopRecording('out.webm');
+  first.finish();
+  await settle();
+  assert.strictEqual(o.downloads.length, 1, 'the first recording was never saved');
+  assert.strictEqual(o.downloads[0][0].parts.length, 1);
+});
+
+test('a second start leaves a running GIF recording in place', async () => {
+  const o = loadOffscreen();
+  vm.runInContext("rec = { format: 'gif', gif: {}, frames: 5 }", o.ctx); // what its frame timer reads
+  const running = vm.runInContext('rec', o.ctx);
+  await o.ctx.startRecording('sid2', 'webm', 100, 100);
+  assert.strictEqual(vm.runInContext('rec', o.ctx), running, 'the GIF\'s frame timer now reads the new recording');
+  assert.strictEqual(o.recorders.length, 0, 'a second recording was started');
 });
