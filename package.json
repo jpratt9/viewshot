@@ -4,6 +4,7 @@
   "description": "ViewShot — Manifest V3 screenshot & tab-recording extension",
   "private": true,
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "package": "rm -f viewshot.zip && zip -X -MM viewshot.zip manifest.json background.js popup.html popup.css popup.js region.js offscreen.html offscreen.js gif.js gif.worker.js icon16.png icon32.png icon48.png icon128.png LICENSE THIRD_PARTY_NOTICES.txt"
   }
 }
