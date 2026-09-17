@@ -24,6 +24,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
   const sleeps = [];
   const deadlines = [];
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
+  let scriptTimeout; // SCRIPT_TIMEOUT_MS, likewise
   let now = 100000;
   let onMessage, onCommand;
 
@@ -70,10 +71,10 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
     chrome, console: { ...console, error: () => {}, warn: () => {}, log: () => {} },
     URL, btoa, clearTimeout,
     // Sleeps are the thing under test here, so record them and move the clock
-    // rather than actually waiting. The capture deadline isn't a sleep: it is
-    // held until the test calls expire().
+    // rather than actually waiting. The capture and page-script deadlines
+    // aren't sleeps: they are held until the test calls expire().
     setTimeout: (fn, ms) => {
-      if (ms === captureTimeout) { deadlines.push(fn); return; }
+      if (ms === captureTimeout || ms === scriptTimeout) { deadlines.push(fn); return; }
       sleeps.push(ms || 0); now += ms || 0; fn();
     },
     // buildName still needs a real Date; only now() is under our control.
@@ -87,12 +88,13 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
   vm.createContext(context);
   vm.runInContext(read('background.js'), context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
+  scriptTimeout = vm.runInContext('SCRIPT_TIMEOUT_MS', context);
   return {
     ctx: context, shots, badges, sleeps,
     message: (msg, respond = () => {}) => onMessage(msg, {}, respond), // respond gets the listener's answer
     command: (cmd, tab) => onCommand(cmd, tab),
     tick: (ms) => { now += ms; },
-    expire: () => deadlines.splice(0).forEach((fn) => fn()), // the capture deadline passes
+    expire: () => deadlines.splice(0).forEach((fn) => fn()), // the held deadlines pass
   };
 }
 
@@ -680,7 +682,9 @@ test('a recording uses the tab it was sent for, even when the worker finds no ac
   chrome.offscreen = { hasDocument: async () => true }; // already open
   const run = chrome.scripting.executeScript;
   chrome.scripting.executeScript = (o) => { targets.push(o.target.tabId); return run(o); };
-  chrome.storage.local.set = async (o) => { stored.push({ ...o.rec }); };
+  keepStore(chrome); // the start reads `rec` back before it starts the recorder
+  const set = chrome.storage.local.set;
+  chrome.storage.local.set = async (o) => { stored.push({ ...o.rec }); return set(o); };
   chrome.runtime.sendMessage = async (m) => { sent.push({ ...m }); };
   Object.assign(bg.ctx.window, { innerWidth: 1280, innerHeight: 713, devicePixelRatio: 1 });
   bg.message({ type: 'rec-start', streamId: 'sid', opts: { ...OPTS, format: 'webm' }, tabId: TAB.id });
@@ -961,8 +965,10 @@ test('a start the offscreen document never gets is undone', async () => {
   const storage = [];
   let reply;
   chrome.offscreen = { hasDocument: async () => true }; // open, but not listening
-  chrome.storage.local.set = async (o) => { storage.push(['set', ...Object.keys(o)]); };
-  chrome.storage.local.remove = async (k) => { storage.push(['remove', k]); };
+  keepStore(chrome); // the start reads `rec` back before it starts the recorder
+  const { set, remove } = chrome.storage.local;
+  chrome.storage.local.set = async (o) => { storage.push(['set', ...Object.keys(o)]); return set(o); };
+  chrome.storage.local.remove = async (k) => { storage.push(['remove', k]); return remove(k); };
   chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') throw new Error(UNREACHABLE); };
   bg.message(WEBM_START, (r) => { reply = r; });
   await settle();
@@ -985,6 +991,7 @@ test('a start that works tells the popup so', async () => {
   const bg = loadBg();
   let reply;
   bg.ctx.chrome.offscreen = { hasDocument: async () => true };
+  keepStore(bg.ctx.chrome); // the start reads `rec` back before it starts the recorder
   // Chrome drops an answer sent after the listener returns, unless it returned true.
   assert.strictEqual(bg.message(WEBM_START, (r) => { reply = r; }), true, 'the popup would never hear back');
   await settle();
@@ -1104,4 +1111,60 @@ test('a start queued behind one that fails waits for its cleanup', async () => {
   assert.deepStrictEqual(replies, [false, true]);
   assert.deepStrictEqual(started, ['sid2'], 'the second start took the failed start\'s rec for a running recording');
   assert.strictEqual(store.rec?.url, TAB.url, 'the second recording was left without its rec');
+});
+
+// --- a recording start the page never answers -------------------------------
+// startRecording waits on two scripts in the page, the edge-glow blip and the
+// viewport read, and neither had a deadline. A page that never ran them held
+// its start for good, and every start queued behind it (recStartGate): a later
+// Record press got no answer and stayed greyed out. Stop, pressed meanwhile,
+// only removed `rec`.
+
+test('a start gives up on a page that never answers, and still records', async () => {
+  const bg = loadBg();
+  const { chrome } = bg.ctx;
+  keepStore(chrome);
+  const sent = [];
+  let reply;
+  chrome.offscreen = { hasDocument: async () => true };
+  chrome.scripting.executeScript = () => new Promise(() => {}); // the page never runs either script
+  chrome.runtime.sendMessage = async (m) => { sent.push(m); };
+  bg.message(WEBM_START, (r) => { reply = r; });
+  await settle();
+  assert.strictEqual(reply, undefined, 'gave up before the deadline');
+  bg.expire(); // the blip's deadline
+  await settle();
+  bg.expire(); // the viewport read's
+  await settle();
+  assert.strictEqual(reply, true, 'still waiting on a page that will never answer');
+  const start = sent.find((m) => m.type === 'rec-start-offscreen');
+  assert.ok(start, 'the recording was never started');
+  assert.deepStrictEqual([start.width, start.height], [undefined, undefined], 'sized to a viewport that was never read');
+});
+
+test('a start stopped while it waits on the page records nothing, and the next start goes ahead', async () => {
+  const bg = loadBg();
+  const { chrome } = bg.ctx;
+  const store = keepStore(chrome);
+  const started = [];
+  const replies = [];
+  chrome.offscreen = { hasDocument: async () => true };
+  const run = chrome.scripting.executeScript;
+  let calls = 0;
+  chrome.scripting.executeScript = (o) => (++calls <= 2 ? new Promise(() => {}) : run(o)); // only the first start's two never answer
+  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') started.push(m.streamId); };
+  bg.message(WEBM_START, (r) => replies.push(r));
+  await settle();
+  bg.message({ type: 'rec-stop' });
+  await settle();
+  assert.strictEqual(store.rec, undefined, 'Stop left the recording marked as running');
+  bg.message({ ...WEBM_START, streamId: 'sid2' }, (r) => replies.push(r));
+  await settle();
+  bg.expire(); // the first start's blip
+  await settle();
+  bg.expire(); // its viewport read
+  await settle();
+  assert.deepStrictEqual(replies, [true, true], 'the next start was never run');
+  assert.deepStrictEqual(started, ['sid2'], 'the stopped start went on to record');
+  assert.strictEqual(store.rec?.url, TAB.url, 'the next recording was left without its rec');
 });

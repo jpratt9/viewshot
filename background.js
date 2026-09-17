@@ -93,6 +93,23 @@ function captureWithTimeout(windowId) {
   ]);
 }
 
+// executeScript answers only once the page has run the script. A recording
+// start waits on two of these, and every later start waits on it
+// (recStartGate), so a page that never runs them (its main thread blocked, say)
+// would hold up all of them for good. So a call that takes longer than
+// SCRIPT_TIMEOUT_MS fails instead, the way a page that refuses scripts does.
+// The deadline is short because the stream id the popup minted for the start
+// only works for about 10 s: Chrome 152 took one used at 9.2 s and refused one
+// used at 10.3 s. Two 2 s deadlines leave a start, and one queued behind it,
+// time to use theirs.
+const SCRIPT_TIMEOUT_MS = 2000;
+function scriptWithTimeout(injection) {
+  return Promise.race([
+    chrome.scripting.executeScript(injection),
+    sleep(SCRIPT_TIMEOUT_MS).then(() => { throw new Error(`executeScript did not answer within ${SCRIPT_TIMEOUT_MS / 1000}s`); }),
+  ]);
+}
+
 // A capture has no UI thread to report into: the popup has closed on Region and
 // never existed for the keyboard shortcuts. So a failure flashes the badge -
 // silence was indistinguishable from a capture that simply did nothing, which
@@ -448,6 +465,10 @@ async function startRecording(streamId, opts, tabId) {
   // at the bottom). innerWidth/innerHeight × devicePixelRatio gives the
   // physical pixels that match what tabCapture actually delivers.
   const dims = await getViewport(tab?.id);
+  // Stop removes `rec`, and it can land while the blip or the viewport read is
+  // still under way: up to two deadlines on a page that never answers. A
+  // recorder started after that would run on with nothing that can stop it.
+  if (!(await chrome.storage.local.get('rec')).rec) { console.warn('[ViewShot] stopped before the recorder started; not starting it'); return; }
   await chrome.runtime.sendMessage({
     type: 'rec-start-offscreen', streamId, format: opts.format,
     width: dims?.width, height: dims?.height,
@@ -459,11 +480,12 @@ async function startRecording(streamId, opts, tabId) {
 // × devicePixelRatio). This is what tabCapture actually streams — pinning
 // getUserMedia's min/max to these values eliminates both letterboxing AND the
 // bottom-padding-black-bar that comes from using outer window dims. Returns
-// null on chrome:// pages or any URL where executeScript can't inject.
+// null on chrome:// pages, any URL where executeScript can't inject, and a
+// page that doesn't answer in time.
 async function getViewport(tabId) {
   if (!tabId) return null;
   try {
-    const [{ result }] = await chrome.scripting.executeScript({
+    const [{ result }] = await scriptWithTimeout({
       target: { tabId },
       func: () => ({
         width: Math.round(window.innerWidth * window.devicePixelRatio),
@@ -486,7 +508,7 @@ async function getViewport(tabId) {
 const BLIP_ANIM_MS = 650;
 async function blipRecordingIndicator(tabId) {
   try {
-    await chrome.scripting.executeScript({
+    await scriptWithTimeout({
       target: { tabId },
       func: (animMs) => {
         const o = document.createElement('div');
@@ -499,7 +521,8 @@ async function blipRecordingIndicator(tabId) {
     });
   } catch (e) {
     // chrome:// URLs and similar refuse executeScript — skip the wait so we
-    // don't delay the recording start for nothing.
+    // don't delay the recording start for nothing. A page that doesn't answer
+    // in time is skipped the same way.
     // Expected on those pages, so only a warning: chrome://extensions lists
     // every console.error from the worker as an extension error.
     console.warn('[ViewShot] blip failed:', e);
