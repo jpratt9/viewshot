@@ -12,10 +12,11 @@ const CODE = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8'
 function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
   const calls = { create: 0, close: 0, sent: [] };
   const on = {}; // background.js's runtime.onStartup / onInstalled listeners
+  let onMsg; // background.js's own runtime.onMessage listener (the first one)
   let docExists = hasDoc;
   const chrome = {
     runtime: {
-      onMessage: { addListener() {}, removeListener() {} },
+      onMessage: { addListener: (fn) => { onMsg = onMsg || fn; }, removeListener() {} },
       onStartup: { addListener: (fn) => { on.onStartup = fn; } },
       onInstalled: { addListener: (fn) => { on.onInstalled = fn; } },
       sendMessage: async (m) => {
@@ -49,6 +50,7 @@ function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
   vm.runInContext(CODE, context);
   return {
     ctx: context, calls, docLives: () => docExists,
+    send: (msg, sendResponse = () => {}) => onMsg(msg, {}, sendResponse),
     fire: async (event, ...args) => {
       assert.ok(on[event], `nothing listens for runtime.${event}`);
       await on[event](...args);
@@ -96,7 +98,9 @@ test('waits for the clipboard write to be acknowledged before closing', async ()
 // --- but it must survive a live recording -----------------------------------
 
 test('leaves the document alone while a recording is running', async () => {
-  const { ctx, calls, docLives } = load({ rec: { format: 'webm', filename: 'x' } });
+  // hasDoc: a running recording lives in a document, and one marked as running
+  // without one is the leftover the check at worker start forgets.
+  const { ctx, calls, docLives } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: true });
   await ctx.copyImage(PNG);
   assert.strictEqual(calls.close, 0, 'closing mid-recording would destroy the capture');
   assert.strictEqual(docLives(), true);
@@ -135,12 +139,45 @@ const ENDINGS = [
 
 for (const [event, what, args] of ENDINGS) {
   test(`${what} forgets a recording that couldn't survive it`, async () => {
-    const { ctx, calls, fire } = load({ rec: { format: 'webm', filename: 'x' } });
+    const { ctx, calls, fire } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: true });
     await fire(event, ...args);
     await ctx.copyImage(PNG);
     assert.strictEqual(calls.close, 1, 'the leftover recording still kept the document open');
   });
 }
+
+// --- or the extension was disabled and enabled again --------------------------
+// Neither event fires then, so the key outlived the recording with nothing to
+// clear it: Stop stayed enabled, Record stayed greyed out, and a clipboard copy
+// left its document open. The recording only lives in the offscreen document,
+// so a key with no document is a leftover.
+
+test('a recording with no offscreen document is forgotten at the next worker start', async () => {
+  const { ctx } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: false });
+  assert.strictEqual(await ctx.getRec(), undefined, 'nothing was recording, whatever the key said');
+});
+
+test("a running recording's key survives a worker start", async () => {
+  const { ctx } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: true });
+  assert.ok(await ctx.getRec(), 'the recording in that document was forgotten');
+});
+
+test("Stop on a leftover recording doesn't message a document that isn't there", async () => {
+  const { ctx, calls } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: false });
+  assert.strictEqual(await ctx.stopRecording(), false, 'it stopped a recording that was not running');
+  assert.ok(!calls.sent.some((m) => m.type === 'rec-stop-offscreen'),
+    'that message logged "Could not establish connection" with no document to hear it');
+});
+
+test('rec-check answers once the leftover key has been checked', async () => {
+  const { ctx, send } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: false });
+  const replies = [];
+  const ret = send({ type: 'rec-check' }, (v) => replies.push(v));
+  assert.strictEqual(ret, true, 'an async reply needs the port held open');
+  await new Promise((r) => setImmediate(r));
+  assert.deepStrictEqual(replies, [true]);
+  assert.strictEqual(await ctx.getRec(), undefined, 'the popup was answered before the key was checked');
+});
 
 test('closeOffscreen is a no-op when no document exists', async () => {
   const { calls, ctx } = load({ hasDoc: false });

@@ -25,6 +25,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // that reports trouble with a recording that is finished.
   else if (msg?.type === 'rec-cap-hit') stopRecording().then((stopped) => { if (stopped) return flashBadge('MAX'); }).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-failed') recFailed();
+  // The popup reads `rec` from storage without waking the worker, so a leftover
+  // key would go unnoticed for as long as the popup was the only thing running.
+  // This message exists to start the worker, which checks the key at every start.
+  else if (msg?.type === 'rec-check') { recChecked.then(() => sendResponse(true)); return true; }
 });
 
 chrome.commands.onCommand.addListener(async (cmd, tab) => {
@@ -38,6 +42,29 @@ chrome.commands.onCommand.addListener(async (cmd, tab) => {
 // after either of those nothing is recording, whatever the key says.
 chrome.runtime.onStartup.addListener(() => chrome.storage.local.remove('rec'));
 chrome.runtime.onInstalled.addListener(() => chrome.storage.local.remove('rec'));
+
+// Disabling the extension ends a recording too - the offscreen document goes
+// with it - but Chrome fires neither event above when it is enabled again, so
+// the key was left behind with nothing recording: Stop stayed enabled, Record
+// stayed greyed out, a failed screenshot's badge ended on REC, and a clipboard
+// copy left its document open. The recording only ever lives in the offscreen
+// document, so a `rec` with no document is a leftover, whatever put it there.
+async function verifyRec() {
+  const { rec } = await chrome.storage.local.get('rec');
+  // Only asked about when there is a key to check: with no key there is nothing
+  // for a document to vouch for.
+  if (!rec || await chrome.offscreen.hasDocument()) return;
+  console.warn('[ViewShot] a recording was marked as running with no offscreen document; forgetting it');
+  await chrome.storage.local.remove('rec');
+}
+const recChecked = verifyRec().catch((e) => console.warn('[ViewShot] rec check failed:', e));
+
+// Every read of `rec` goes through here, so none of them can beat the check
+// above: a Stop pressed on a stale popup is the one that used to win that race.
+async function getRec() {
+  await recChecked;
+  return (await chrome.storage.local.get('rec')).rec;
+}
 
 async function getOpts() {
   const { opts } = await chrome.storage.local.get('opts');
@@ -464,7 +491,7 @@ async function ensureOffscreen() {
 // whatever that document is doing, and Chrome does not paint the popup until
 // its onload completes. So close it the moment the work is finished.
 async function closeOffscreen() {
-  const { rec } = await chrome.storage.local.get('rec');
+  const rec = await getRec();
   if (rec) return; // a recording lives in there; closing would kill it
   try {
     if (!(await chrome.offscreen.hasDocument())) return;
@@ -502,7 +529,7 @@ async function flashBadge(text) {
   // Back to REC, not blank, while a recording is still running: a screenshot
   // can fail in the middle of one.
   setTimeout(async () => {
-    const { rec } = await chrome.storage.local.get('rec');
+    const rec = await getRec();
     await chrome.action.setBadgeText({ text: rec ? 'REC' : '' });
   }, 3000);
 }
@@ -523,7 +550,7 @@ async function startRecording(streamId, opts, tabId) {
   log('rec-start received, opts=', opts, 'streamId=', streamId);
   // One recording at a time. Starting another would overwrite `rec`, and the
   // offscreen document would lose the recording already running.
-  const { rec } = await chrome.storage.local.get('rec');
+  const rec = await getRec();
   if (rec) { console.warn('[ViewShot] a recording is already running; not starting another'); return; }
   // The stream id is minted in the popup (under its user gesture); we just wire
   // it to the offscreen recorder, which is the only context with media APIs.
@@ -555,7 +582,7 @@ async function startRecording(streamId, opts, tabId) {
   // Stop removes `rec`, and it can land while the blip or the viewport read is
   // still under way: up to two deadlines on a page that never answers. A
   // recorder started after that would run on with nothing that can stop it.
-  if (!(await chrome.storage.local.get('rec')).rec) { console.warn('[ViewShot] stopped before the recorder started; not starting it'); return; }
+  if (!(await getRec())) { console.warn('[ViewShot] stopped before the recorder started; not starting it'); return; }
   await chrome.runtime.sendMessage({
     type: 'rec-start-offscreen', streamId, format: opts.format,
     width: dims?.width, height: dims?.height,
@@ -631,7 +658,7 @@ async function blipRecordingIndicator(tabId) {
 
 async function stopRecording() {
   log('rec-stop received');
-  const { rec } = await chrome.storage.local.get('rec');
+  const rec = await getRec();
   // Answered, so the frame cap can tell whether it is the one that ended the
   // recording: false means a Stop got here first.
   if (!rec) { console.warn('[ViewShot] stop with no active recording'); return false; }

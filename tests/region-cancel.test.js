@@ -194,7 +194,8 @@ function loadPopup() {
     chrome: {
       tabs: { query: async () => [TAB], create: () => {} },
       storage: { local: { get: async () => ({}), set: async () => {}, onChanged: { addListener() {} } } },
-      runtime: { sendMessage: (m) => sent.push(m) },
+      // The popup's startup rec-check is the worker's business, not this file's.
+      runtime: { sendMessage: async (m) => { if (m.type !== 'rec-check') sent.push(m); } },
       tabCapture: { getMediaStreamId: async () => 'sid' },
     },
     localStorage: { getItem: () => null, setItem: () => {} },

@@ -206,6 +206,13 @@ $('filename').addEventListener('input', () => { if (!ready) edited.add('filename
 $('shortcuts').addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }); });
 
 paintFromCache(); // synchronous: correct UI in the first frame
+// Un-awaited, so it is not on the path to the first paint: this only starts the
+// worker, which checks `rec` against the offscreen document. If the key was a
+// leftover - the extension disabled mid-recording, which Chrome tells the worker
+// nothing about when it is enabled again - the worker removes it, and the
+// storage listener above enables Record and greys out Stop. Nothing else here
+// wakes the worker: this popup reads storage without it.
+chrome.runtime.sendMessage({ type: 'rec-check' }).catch(() => { /* a worker that can't answer has no recording in it either */ });
 const startup = load().catch(() => {
   showError('Couldn’t load settings. Close and reopen ViewShot to try again.');
 });

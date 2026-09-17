@@ -278,7 +278,9 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
           onChanged: { addListener: (fn) => { onStored = fn; } },
         },
       },
-      runtime: { sendMessage: async (m) => { sent.push(m); if (reply instanceof Error) throw reply; return reply; } }, // the worker's answer
+      // the worker's answer. The popup's startup rec-check is the worker's
+      // business, not this file's, so it is left out of `sent`.
+      runtime: { sendMessage: async (m) => { if (m.type !== 'rec-check') sent.push(m); if (reply instanceof Error) throw reply; return reply; } },
       tabCapture: { getMediaStreamId: async () => { streams.push('requested'); if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
     },

@@ -33,6 +33,7 @@ function makeEl(extra = {}) {
 function loadPopup(store = { opts: { format: 'jpg' } }) {
   const els = {};
   const sent = [];
+  let checks = 0; // rec-check messages: the popup asking the worker to start
   let closed = false;
   let settleAck;
   const ack = new Promise((res, rej) => { settleAck = { res, rej }; });
@@ -67,7 +68,9 @@ function loadPopup(store = { opts: { format: 'jpg' } }) {
         onChanged: { addListener() {} },
       },
     },
-    runtime: { sendMessage: (msg) => { sent.push(msg); return ack; } },
+    // The popup's startup rec-check only has to reach the worker, so it is
+    // counted rather than left in `sent` with the messages a click sends.
+    runtime: { sendMessage: (msg) => { if (msg.type === 'rec-check') checks++; else sent.push(msg); return ack; } },
     tabCapture: { getMediaStreamId: async () => 'sid' },
   };
 
@@ -80,11 +83,21 @@ function loadPopup(store = { opts: { format: 'jpg' } }) {
   vm.runInContext(read('popup.js'), context);
 
   return {
-    els, sent, ack: settleAck,
+    els, sent, ack: settleAck, checks: () => checks,
     click: (mode) => byMode(mode).listeners.click[0](),
     closed: () => closed,
   };
 }
+
+// Opening the popup doesn't wake the worker on its own - tabs.query and
+// storage.local.get are answered without it - so a `rec` left behind by the
+// extension being disabled mid-recording would keep Stop enabled and Record
+// greyed out until something else sent the worker a message.
+test('the popup asks the worker to check a leftover recording when it opens', async () => {
+  const p = loadPopup();
+  await settle();
+  assert.strictEqual(p.checks(), 1, 'nothing started the worker, so nothing checked the key');
+});
 
 test('Region keeps the popup open until the worker acknowledges the message', async () => {
   const p = loadPopup();
