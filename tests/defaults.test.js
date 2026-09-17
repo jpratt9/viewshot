@@ -126,6 +126,20 @@ test('the default quality is in range for the lossy default format', () => {
   assert.ok(bg.DEFAULTS.quality > 0 && bg.DEFAULTS.quality <= 1);
 });
 
+test('the Quality slider can represent the default without snapping', () => {
+  const input = read('popup.html').match(/<input\b[^>]*\bid="quality"[^>]*>/)[0];
+  const attribute = (name) => Number(input.match(new RegExp(`\\b${name}="([^"]+)"`))[1]);
+  const min = attribute('min');
+  const max = attribute('max');
+  const step = attribute('step');
+  const quality = bg.DEFAULTS.quality;
+  assert.ok(quality >= min && quality <= max);
+  assert.ok(step > 0);
+  const steps = (quality - min) / step;
+  assert.ok(Math.abs(steps - Math.round(steps)) < 1e-9,
+    `default quality ${quality} would snap on a slider with min=${min} and step=${step}`);
+});
+
 // --- how the default reaches the popup ------------------------------------
 
 test('an unconfigured popup shows the default format', async () => {
