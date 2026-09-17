@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const read = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
 const PNG = 'data:image/png;base64,AAAA';
-const TAB = { id: 7, windowId: 1, url: 'https://a.com', title: 'T' };
+const TAB = { id: 7, windowId: 1, url: 'https://a.com', title: 'T', width: 1280, height: 713 };
 const settle = () => new Promise((r) => setImmediate(r));
 
 // Three unrelated errors showed up in chrome://extensions at once, and each one
@@ -778,6 +778,40 @@ test('a recording uses the tab it was sent for, even when the worker finds no ac
   assert.deepStrictEqual([start.width, start.height], [1280, 713], 'the recording was not sized to the tab');
 });
 
+// --- a recording of a page that refuses scripts -----------------------------
+// The viewport read was the only source of a recording's size, so chrome://
+// pages, the Web Store and file:// without file access sent no dims at all.
+// The offscreen document then left getUserMedia unpinned, and Chrome scaled a
+// 1280x713 tab to its own 800x600 ceiling with black bars above and below it.
+
+function recStart(bg) {
+  const { chrome } = bg.ctx;
+  const sent = [];
+  chrome.offscreen = { hasDocument: async () => true }; // already open
+  keepStore(chrome); // the start reads `rec` back before it starts the recorder
+  chrome.runtime.sendMessage = async (m) => { sent.push({ ...m }); };
+  return sent;
+}
+
+test('a recording of a page that refuses scripts is still sized to the tab', async () => {
+  const bg = loadBg({ scriptFails: true });
+  const sent = recStart(bg);
+  await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
+  const start = sent.find((m) => m.type === 'rec-start-offscreen');
+  assert.deepStrictEqual([start.width, start.height], [TAB.width, TAB.height], 'the capture was left unpinned, and Chrome letterboxed it');
+});
+
+test('a recording of a tab Chrome reports no size for is left unpinned', async () => {
+  const bg = loadBg({ scriptFails: true });
+  const { chrome } = bg.ctx;
+  const { width, height, ...sizeless } = TAB; // a tab Chrome answered without dims
+  chrome.tabs.get = async () => sizeless;
+  const sent = recStart(bg);
+  await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
+  const start = sent.find((m) => m.type === 'rec-start-offscreen');
+  assert.deepStrictEqual([start.width, start.height], [undefined, undefined], 'pinned the capture to a size nobody knows');
+});
+
 // A named tab can close before the worker looks it up. Falling back to the
 // active tab then would shoot or record a different page under its name.
 
@@ -1245,7 +1279,7 @@ test('a start gives up on a page that never answers, and still records', async (
   assert.strictEqual(reply, true, 'still waiting on a page that will never answer');
   const start = sent.find((m) => m.type === 'rec-start-offscreen');
   assert.ok(start, 'the recording was never started');
-  assert.deepStrictEqual([start.width, start.height], [undefined, undefined], 'sized to a viewport that was never read');
+  assert.deepStrictEqual([start.width, start.height], [TAB.width, TAB.height], 'not sized to the tab the viewport read gave up on');
 });
 
 test('a start stopped while it waits on the page records nothing, and the next start goes ahead', async () => {

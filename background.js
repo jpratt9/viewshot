@@ -621,14 +621,15 @@ async function startRecording(streamId, opts, tabId) {
   // skip straight to recording — the badge + Chrome's own blue capture border
   // are still visible to the user as recording-active cues.
   const blipOver = tab ? await blipRecordingIndicator(tab.id) : 0;
-  // Query the captured tab's ACTUAL viewport (innerWidth/innerHeight) — NOT
-  // chrome.tabs.Tab.width/height, which reports the outer window dims (tab
-  // strip + omnibox + bookmarks bar + status bar all included). tabCapture
-  // only captures the web-contents viewport, so pinning min/max to the outer
-  // window dims makes Chrome pad the difference with black (~150-200px bar
-  // at the bottom). innerWidth/innerHeight × devicePixelRatio gives the
-  // physical pixels that match what tabCapture actually delivers.
-  const dims = await getViewport(tab?.id);
+  // Query the captured tab's ACTUAL viewport (innerWidth/innerHeight). NOT
+  // chrome.windows.get(), which is the outer window (tab strip + omnibox +
+  // bookmarks bar all included): tabCapture only streams the web-contents
+  // viewport, so pinning min/max to the window pads the difference with
+  // black (~150-200px bar at the bottom). innerWidth/innerHeight ×
+  // devicePixelRatio gives the physical pixels tabCapture delivers; the tab
+  // is passed so a page that refuses the script still has a size to fall
+  // back on.
+  const dims = await getViewport(tab);
   // A blip that ran out of time may have shown its glow just before its
   // deadline, and the wait for it to fade was skipped along with the blip.
   // The viewport read above has already used up part of that wait.
@@ -646,15 +647,18 @@ async function startRecording(streamId, opts, tabId) {
 
 // Get the captured tab's real viewport in PHYSICAL pixels (innerWidth/Height
 // × devicePixelRatio). This is what tabCapture actually streams — pinning
-// getUserMedia's min/max to these values eliminates both letterboxing AND the
-// bottom-padding-black-bar that comes from using outer window dims. Returns
-// null on chrome:// pages, any URL where executeScript can't inject, and a
-// page that doesn't answer in time.
-async function getViewport(tabId) {
-  if (!tabId) return null;
+// getUserMedia's min/max to these values eliminates the letterboxing an
+// unpinned capture has (scaled to a ceiling resolution, padded with black).
+// chrome:// pages, the Web Store and file:// without file access refuse the
+// script, and so does a page that doesn't answer in time, so fall back to
+// chrome.tabs.Tab.width/height: the same viewport, but in CSS pixels, which
+// on a HiDPI display records at 1x rather than at the page's own dpr.
+// Unpinned is worse than 1x: it letterboxes a 1280x713 tab to 800x600.
+async function getViewport(tab) {
+  if (!tab?.id) return null;
   try {
     const [{ result }] = await scriptWithTimeout({
-      target: { tabId },
+      target: { tabId: tab.id },
       func: () => ({
         width: Math.round(window.innerWidth * window.devicePixelRatio),
         height: Math.round(window.innerHeight * window.devicePixelRatio),
@@ -663,7 +667,7 @@ async function getViewport(tabId) {
     return result;
   } catch (e) {
     console.warn('[ViewShot] getViewport failed:', e);
-    return null;
+    return tab.width && tab.height ? { width: tab.width, height: tab.height } : null;
   }
 }
 
