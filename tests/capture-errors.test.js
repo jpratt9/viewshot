@@ -1023,6 +1023,7 @@ for (const [rec, after] of [[RUNNING, 'REC'], [undefined, '']]) {
     const bg = loadBg({ captureFails: () => 'Cannot access contents of the page' });
     const { chrome } = bg.ctx;
     const texts = [];
+    chrome.offscreen = { hasDocument: async () => true }; // the running recording is in there
     chrome.storage.local.get = async () => ({ rec });
     chrome.action.setBadgeText = async ({ text }) => { texts.push(text); };
     await bg.ctx.runCapture('visible', OPTS).catch(bg.ctx.captureFailed);
@@ -1406,6 +1407,7 @@ test('the frame cap leaves the badge alone when a Stop got there first', async (
 
 test('the frame cap still flashes MAX when it ends a recording', async () => {
   const bg = loadBg();
+  bg.ctx.chrome.offscreen = { hasDocument: async () => true }; // the recording is in there
   const store = keepStore(bg.ctx.chrome);
   const sent = [];
   bg.ctx.chrome.runtime.sendMessage = async (m) => { sent.push(m.type); };

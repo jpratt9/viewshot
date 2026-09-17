@@ -10,7 +10,7 @@ const CODE = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8'
 // The document is the thing under test: it shares a renderer main thread with
 // the action popup, so it must not outlive the work it was created for.
 function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
-  const calls = { create: 0, close: 0, sent: [] };
+  const calls = { create: 0, close: 0, sent: [], badges: [] };
   const on = {}; // background.js's runtime.onStartup / onInstalled listeners
   let onMsg; // background.js's own runtime.onMessage listener (the first one)
   let docExists = hasDoc;
@@ -40,7 +40,10 @@ function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
         remove: async (k) => { if (k === 'rec') rec = null; },
       },
     },
-    action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
+    action: {
+      setBadgeText: async ({ text }) => { calls.badges.push(text); },
+      setBadgeBackgroundColor: async () => {},
+    },
   };
   const context = {
     chrome, console, URL, btoa, Date, clearTimeout,
@@ -50,6 +53,11 @@ function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
   vm.runInContext(CODE, context);
   return {
     ctx: context, calls, docLives: () => docExists,
+    // The document going away on its own - a renderer crash - with no worker
+    // restart and no closeDocument. `key` is what storage holds, read without a
+    // getRec() that would check it on the way past.
+    killDoc: () => { docExists = false; },
+    key: () => rec,
     send: (msg, sendResponse = () => {}) => onMsg(msg, {}, sendResponse),
     fire: async (event, ...args) => {
       assert.ok(on[event], `nothing listens for runtime.${event}`);
@@ -152,7 +160,7 @@ for (const [event, what, args] of ENDINGS) {
 // left its document open. The recording only lives in the offscreen document,
 // so a key with no document is a leftover.
 
-test('a recording with no offscreen document is forgotten at the next worker start', async () => {
+test('a recording with no offscreen document is forgotten at the next read', async () => {
   const { ctx } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: false });
   assert.strictEqual(await ctx.getRec(), undefined, 'nothing was recording, whatever the key said');
 });
@@ -170,13 +178,52 @@ test("Stop on a leftover recording doesn't message a document that isn't there",
 });
 
 test('rec-check answers once the leftover key has been checked', async () => {
-  const { ctx, send } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: false });
+  const { send, key } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: false });
   const replies = [];
   const ret = send({ type: 'rec-check' }, (v) => replies.push(v));
   assert.strictEqual(ret, true, 'an async reply needs the port held open');
   await new Promise((r) => setImmediate(r));
   assert.deepStrictEqual(replies, [true]);
-  assert.strictEqual(await ctx.getRec(), undefined, 'the popup was answered before the key was checked');
+  assert.strictEqual(key(), null, 'the popup was answered before the key was checked');
+});
+
+// --- or the document died on its own ------------------------------------------
+// A renderer crash takes the document, and the recording in it, without taking
+// the worker: no restart, so a check that only ran when the worker started
+// never ran again. The badge kept showing REC, the popup kept Stop enabled and
+// Record greyed out, and a clipboard copy left its document open.
+
+test('a document that dies while the worker is awake is noticed by the next read', async () => {
+  const { ctx, killDoc } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: true });
+  assert.ok(await ctx.getRec(), 'the recording was forgotten while its document was still there');
+  killDoc();
+  assert.strictEqual(await ctx.getRec(), undefined, 'nothing was recording, whatever the key said');
+});
+
+test("Stop after the document died doesn't message it", async () => {
+  const { ctx, calls, killDoc } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: true });
+  await ctx.getRec();
+  killDoc();
+  assert.strictEqual(await ctx.stopRecording(), false, 'it stopped a recording that was not running');
+  assert.ok(!calls.sent.some((m) => m.type === 'rec-stop-offscreen'),
+    'that message logged "Could not establish connection" with no document to hear it');
+});
+
+test('forgetting a leftover recording takes REC off the badge', async () => {
+  const { ctx, calls, killDoc } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: true });
+  await ctx.getRec();
+  killDoc();
+  await ctx.getRec();
+  assert.deepStrictEqual(calls.badges, [''], 'REC was left over a recording that had ended');
+});
+
+test('rec-check re-checks a worker that is already awake', async () => {
+  const { ctx, send, key, killDoc } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: true });
+  await ctx.getRec(); // whatever the worker checked at startup is long settled
+  killDoc();
+  send({ type: 'rec-check' });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(key(), null, 'opening a popup left the leftover key alone');
 });
 
 test('closeOffscreen is a no-op when no document exists', async () => {

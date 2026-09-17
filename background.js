@@ -27,8 +27,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   else if (msg?.type === 'rec-failed') recFailed();
   // The popup reads `rec` from storage without waking the worker, so a leftover
   // key would go unnoticed for as long as the popup was the only thing running.
-  // This message exists to start the worker, which checks the key at every start.
-  else if (msg?.type === 'rec-check') { recChecked.then(() => sendResponse(true)); return true; }
+  // This message is what checks it for the popup: opening one is also the way a
+  // key whose document died under an awake worker gets noticed.
+  else if (msg?.type === 'rec-check') {
+    getRec().catch((e) => console.warn('[ViewShot] rec check failed:', e)).then(() => sendResponse(true));
+    return true;
+  }
 });
 
 chrome.commands.onCommand.addListener(async (cmd, tab) => {
@@ -43,27 +47,24 @@ chrome.commands.onCommand.addListener(async (cmd, tab) => {
 chrome.runtime.onStartup.addListener(() => chrome.storage.local.remove('rec'));
 chrome.runtime.onInstalled.addListener(() => chrome.storage.local.remove('rec'));
 
-// Disabling the extension ends a recording too - the offscreen document goes
-// with it - but Chrome fires neither event above when it is enabled again, so
-// the key was left behind with nothing recording: Stop stayed enabled, Record
-// stayed greyed out, a failed screenshot's badge ended on REC, and a clipboard
-// copy left its document open. The recording only ever lives in the offscreen
-// document, so a `rec` with no document is a leftover, whatever put it there.
-async function verifyRec() {
+// Every read of `rec` goes through here, and every read checks it. The
+// recording only ever lives in the offscreen document, so a key with no
+// document is a leftover: disabling the extension leaves one behind, because
+// Chrome fires neither event above when it is enabled again, and so does a
+// document that dies on its own - a renderer crash, or Chrome discarding it.
+// Checking once per worker start missed that second one entirely: the worker
+// can stay awake right through it, and then the badge kept showing REC, the
+// popup kept Stop enabled and Record greyed out, and a clipboard copy left its
+// document open.
+async function getRec() {
   const { rec } = await chrome.storage.local.get('rec');
-  // Only asked about when there is a key to check: with no key there is nothing
-  // for a document to vouch for.
-  if (!rec || await chrome.offscreen.hasDocument()) return;
+  // Only asked when there is a key to check, and a hasDocument() that can't
+  // answer leaves the key alone: it is evidence only when it says there is no
+  // document.
+  if (!rec || await chrome.offscreen.hasDocument().catch(() => true)) return rec;
   console.warn('[ViewShot] a recording was marked as running with no offscreen document; forgetting it');
   await chrome.storage.local.remove('rec');
-}
-const recChecked = verifyRec().catch((e) => console.warn('[ViewShot] rec check failed:', e));
-
-// Every read of `rec` goes through here, so none of them can beat the check
-// above: a Stop pressed on a stale popup is the one that used to win that race.
-async function getRec() {
-  await recChecked;
-  return (await chrome.storage.local.get('rec')).rec;
+  await chrome.action.setBadgeText({ text: '' }); // REC over nothing
 }
 
 async function getOpts() {
