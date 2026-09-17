@@ -127,8 +127,20 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
         return; // keep the popup open so the error is visible
       }
       await save();
-      chrome.runtime.sendMessage({ type: 'rec-start', streamId, tabId: activeTab.id, opts });
-      $('stopBtn').disabled = false; // popup stays open, so reflect the live recording
+      // Stop is left to the storage listener below, which enables it once the
+      // worker has marked the recording as running. A start that fails before
+      // then changes nothing in storage, so the worker's answer is what brings
+      // Record back.
+      let started = false;
+      try {
+        started = await chrome.runtime.sendMessage({ type: 'rec-start', streamId, tabId: activeTab.id, opts });
+      } catch (e) {
+        console.error('[ViewShot] rec-start message failed:', e);
+      }
+      if (!started) {
+        showError('Couldn’t start the recording. Try again.');
+        toggleRec(); // nothing is recording, so Record comes back
+      }
     } else {
       // Until "Allow access to file URLs" is on, Chrome refuses both
       // executeScript and captureVisibleTab on file:// pages. Recording needs

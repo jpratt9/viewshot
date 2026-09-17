@@ -89,7 +89,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   return {
     ctx: context, shots, badges, sleeps,
-    message: (msg) => onMessage(msg, {}, () => {}),
+    message: (msg, respond = () => {}) => onMessage(msg, {}, respond), // respond gets the listener's answer
     command: (cmd, tab) => onCommand(cmd, tab),
     tick: (ms) => { now += ms; },
     expire: () => deadlines.splice(0).forEach((fn) => fn()), // the capture deadline passes
@@ -233,7 +233,7 @@ test('recording a page that refuses scripts logs a warning, not an error', async
 
 // --- the popup says which page it was --------------------------------------
 
-function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, startupGate, startupFails = false } = {}) {
+function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, startupGate, startupFails = false, reply = true } = {}) {
   const els = {};
   const sent = [];
   const writes = [];
@@ -273,7 +273,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
           onChanged: { addListener: (fn) => { onStored = fn; } },
         },
       },
-      runtime: { sendMessage: async (m) => { sent.push(m); return true; } },
+      runtime: { sendMessage: async (m) => { sent.push(m); if (reply instanceof Error) throw reply; return reply; } }, // the worker's answer
       tabCapture: { getMediaStreamId: async () => { streams.push('requested'); if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
     },
@@ -710,7 +710,7 @@ test('a recording whose tab has since closed sets nothing up', async () => {
   bg.message({ type: 'rec-start', streamId: 'sid', opts: { ...OPTS, format: 'webm' }, tabId: 99 });
   await settle();
   assert.strictEqual(stored.length, 0, 'marked as recording with nothing recording');
-  assert.deepStrictEqual(bg.badges, [], 'REC went up for a recording that never started');
+  assert.deepStrictEqual(bg.badges, ['!'], 'REC went up, or the failed start went unnoticed');
 });
 
 // --- a second recording started over the first ------------------------------
@@ -740,6 +740,7 @@ test('Record stays greyed out once it has started a recording, until Stop', asyn
   const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' } } });
   await p.ready();
   await p.click('visible');
+  p.stored({ rec: { newValue: RUNNING } }); // the worker marks it as running
   assert.strictEqual(p.btn('visible').disabled, true, 'Record was left enabled over the recording it started');
   await p.click('visible');
   p.stop();
@@ -924,3 +925,105 @@ test('failed initialization reports an error and cannot save fallback options', 
   assert.strictEqual(p.sent.length, 0);
   assert.strictEqual(p.streams.length, 0);
 });
+
+// --- REC stuck on, or wiped during a recording ------------------------------
+// startRecording marks the recording as running and puts REC up before it
+// tells the offscreen document to start. When that document never answered its
+// ping, or never got the message, nothing undid either: REC stayed on, an open
+// popup kept Stop enabled, and closeOffscreen() wouldn't close the document.
+// The popup enabled Stop without hearing whether the start worked. And the !
+// of a screenshot that failed mid-recording blanked the badge 3 s later,
+// wiping REC while the recording ran on.
+
+const WEBM_START = { type: 'rec-start', streamId: 'sid', opts: { ...OPTS, format: 'webm' }, tabId: TAB.id };
+const UNREACHABLE = 'Could not establish connection. Receiving end does not exist.';
+
+test('a start whose new offscreen document never answers sets nothing up, and says so', async () => {
+  const bg = loadBg();
+  const { chrome } = bg.ctx;
+  const stored = [];
+  const sent = [];
+  let reply;
+  chrome.offscreen = { hasDocument: async () => false, createDocument: async () => {} };
+  chrome.storage.local.set = async (o) => { stored.push(o); };
+  chrome.runtime.sendMessage = async (m) => { sent.push(m.type); throw new Error(UNREACHABLE); };
+  bg.message(WEBM_START, (r) => { reply = r; });
+  await settle();
+  assert.deepStrictEqual(stored, [], 'marked as recording with nothing recording');
+  assert.ok(!sent.includes('rec-start-offscreen'), 'started a recording in a document that never answered');
+  assert.deepStrictEqual(bg.badges, ['!'], 'REC went up, or the failed start went unnoticed');
+  assert.strictEqual(reply, false, 'the popup was told the recording started');
+});
+
+test('a start the offscreen document never gets is undone', async () => {
+  const bg = loadBg();
+  const { chrome } = bg.ctx;
+  const storage = [];
+  let reply;
+  chrome.offscreen = { hasDocument: async () => true }; // open, but not listening
+  chrome.storage.local.set = async (o) => { storage.push(['set', ...Object.keys(o)]); };
+  chrome.storage.local.remove = async (k) => { storage.push(['remove', k]); };
+  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') throw new Error(UNREACHABLE); };
+  bg.message(WEBM_START, (r) => { reply = r; });
+  await settle();
+  assert.deepStrictEqual(storage, [['set', 'rec'], ['remove', 'rec']], 'still marked as recording with nothing recording');
+  assert.deepStrictEqual(bg.badges, ['REC', '!'], 'REC stayed up, or the failed start went unnoticed');
+  assert.strictEqual(reply, false, 'the popup was told the recording started');
+});
+
+test('a start that fails in the offscreen document is still undone', async () => {
+  const bg = loadBg();
+  const removed = [];
+  bg.ctx.chrome.storage.local.remove = async (k) => { removed.push(k); };
+  bg.message({ type: 'rec-failed' });
+  await settle();
+  assert.deepStrictEqual(removed, ['rec'], 'still marked as recording with nothing recording');
+  assert.deepStrictEqual(bg.badges, ['!'], 'the failed start went unnoticed');
+});
+
+test('a start that works tells the popup so', async () => {
+  const bg = loadBg();
+  let reply;
+  bg.ctx.chrome.offscreen = { hasDocument: async () => true };
+  // Chrome drops an answer sent after the listener returns, unless it returned true.
+  assert.strictEqual(bg.message(WEBM_START, (r) => { reply = r; }), true, 'the popup would never hear back');
+  await settle();
+  assert.strictEqual(reply, true);
+  assert.deepStrictEqual(bg.badges, ['REC']);
+});
+
+for (const [rec, after] of [[RUNNING, 'REC'], [undefined, '']]) {
+  test(`a failed screenshot's ! gives way to ${rec ? 'REC while a recording runs' : 'a blank badge with nothing recording'}`, async () => {
+    const bg = loadBg({ captureFails: () => 'Cannot access contents of the page' });
+    const { chrome } = bg.ctx;
+    const texts = [];
+    chrome.storage.local.get = async () => ({ rec });
+    chrome.action.setBadgeText = async ({ text }) => { texts.push(text); };
+    await bg.ctx.runCapture('visible', OPTS).catch(bg.ctx.captureFailed);
+    await settle();
+    assert.deepStrictEqual(texts, ['!', after]);
+  });
+}
+
+test('Record leaves Stop to the worker marking the recording as running', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' } } });
+  await p.ready();
+  await p.click('visible');
+  assert.strictEqual(p.els.stopBtn.disabled, true, 'Stop was enabled before the recording was marked as running');
+  assert.strictEqual(p.btn('visible').disabled, true, 'Record came back while the start was under way');
+  p.stored({ rec: { newValue: RUNNING } });
+  assert.strictEqual(p.els.stopBtn.disabled, false);
+});
+
+for (const [what, reply] of [['says the start failed', false], ['can\'t be reached', new Error(UNREACHABLE)]]) {
+  test(`Record comes back when the worker ${what}`, async () => {
+    const p = loadPopup('https://a.com/x', { reply, store: { opts: { format: 'webm' } } });
+    await p.ready();
+    await p.click('visible');
+    assert.strictEqual(p.els.stopBtn.disabled, true, 'Stop was enabled for a recording that never started');
+    assert.strictEqual(p.btn('visible').disabled, false, 'a start that failed left Record greyed out');
+    assert.strictEqual(p.els.err.hidden, false, 'the failed start went unnoticed');
+    await p.click('visible');
+    assert.deepStrictEqual(p.sent.map((m) => m.type), ['rec-start', 'rec-start']);
+  });
+}

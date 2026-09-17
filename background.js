@@ -9,10 +9,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // "press Region twice" bug. The popup awaits this ack before window.close().
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'capture') { sendResponse(true); runCapture(msg.mode, msg.opts, msg.tabId).catch(captureFailed); }
-  else if (msg?.type === 'rec-start') startRecording(msg.streamId, msg.opts, msg.tabId).catch((e) => console.error('[ViewShot]', e));
+  else if (msg?.type === 'rec-start') {
+    // Answered once the start has worked or failed: the popup enables Stop
+    // from `rec`, and a start that fails before `rec` is written leaves
+    // nothing there for it to see.
+    startRecording(msg.streamId, msg.opts, msg.tabId)
+      .then(() => sendResponse(true), (e) => { console.error('[ViewShot]', e); sendResponse(false); return recFailed(); });
+    return true;
+  }
   else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-cap-hit') stopRecording().then(() => flashBadge('MAX')).catch((e) => console.error('[ViewShot]', e));
-  else if (msg?.type === 'rec-failed') chrome.storage.local.remove('rec').then(() => flashBadge('!'));
+  else if (msg?.type === 'rec-failed') recFailed();
 });
 
 chrome.commands.onCommand.addListener(async (cmd, tab) => {
@@ -342,12 +349,18 @@ async function ensureOffscreen() {
   try { await offscreenCreating; } finally { offscreenCreating = null; }
   // createDocument can resolve just before the page's message listener is live,
   // so the first rec-start would be dropped. Ping until it answers (the cause
-  // of the "press record twice to start" bug).
+  // of the "press record twice to start" bug). One that never answers is a
+  // failure, not a document to carry on with.
   for (let i = 0; i < 40; i++) {
-    try { if ((await chrome.runtime.sendMessage({ type: 'offscreen-ping' })) === 'pong') break; } catch {}
+    try {
+      if ((await chrome.runtime.sendMessage({ type: 'offscreen-ping' })) === 'pong') {
+        console.log('[ViewShot] offscreen document ready');
+        return;
+      }
+    } catch {}
     await sleep(25);
   }
-  console.log('[ViewShot] offscreen document ready');
+  throw new Error('The offscreen document never answered');
 }
 
 // An offscreen document shares its renderer process — and therefore its Blink
@@ -367,10 +380,11 @@ async function closeOffscreen() {
 
 // ---- clipboard via the offscreen document ----
 async function copyImage(pngDataUrl) {
-  await ensureOffscreen();
   // The offscreen listener answers only after the clipboard write resolves, so
   // awaiting here means it is safe to tear the document down straight after.
+  // A new document that never answered is closed too.
   try {
+    await ensureOffscreen();
     await chrome.runtime.sendMessage({ type: 'shot-clipboard', dataUrl: pngDataUrl });
   } finally {
     await closeOffscreen();
@@ -383,7 +397,18 @@ const log = (...a) => console.log('[ViewShot]', ...a);
 async function flashBadge(text) {
   await chrome.action.setBadgeBackgroundColor({ color: '#e5534b' });
   await chrome.action.setBadgeText({ text });
-  setTimeout(() => chrome.action.setBadgeText({ text: '' }), 3000);
+  // Back to REC, not blank, while a recording is still running: a screenshot
+  // can fail in the middle of one.
+  setTimeout(async () => {
+    const { rec } = await chrome.storage.local.get('rec');
+    await chrome.action.setBadgeText({ text: rec ? 'REC' : '' });
+  }, 3000);
+}
+
+// A start that failed, here or in the offscreen document: nothing is
+// recording, so drop `rec` (an open popup follows it) and flash ! over REC.
+function recFailed() {
+  return chrome.storage.local.remove('rec').then(() => flashBadge('!'));
 }
 
 async function startRecording(streamId, opts, tabId) {

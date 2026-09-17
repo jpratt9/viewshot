@@ -77,6 +77,14 @@ test('still closes the document when the clipboard write rejects', async () => {
   assert.strictEqual(calls.close, 1, 'a failed write must not leak the document');
 });
 
+test('closes a new document that never answers, and fails the copy', async () => {
+  const { ctx, calls, docLives } = load();
+  ctx.chrome.runtime.sendMessage = async () => { throw new Error('Could not establish connection. Receiving end does not exist.'); };
+  await assert.rejects(() => ctx.copyImage(PNG), /offscreen document never answered/);
+  assert.strictEqual(calls.close, 1, 'a document that never answered was left open');
+  assert.strictEqual(docLives(), false);
+});
+
 test('waits for the clipboard write to be acknowledged before closing', async () => {
   const { ctx, calls } = load();
   await ctx.copyImage(PNG);
