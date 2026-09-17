@@ -466,7 +466,7 @@ async function startRecording(streamId, opts, tabId) {
   // where injection fails, blipRecordingIndicator returns immediately and we
   // skip straight to recording — the badge + Chrome's own blue capture border
   // are still visible to the user as recording-active cues.
-  if (tab) await blipRecordingIndicator(tab.id);
+  const blipOver = tab ? await blipRecordingIndicator(tab.id) : 0;
   // Query the captured tab's ACTUAL viewport (innerWidth/innerHeight) — NOT
   // chrome.tabs.Tab.width/height, which reports the outer window dims (tab
   // strip + omnibox + bookmarks bar + status bar all included). tabCapture
@@ -475,6 +475,10 @@ async function startRecording(streamId, opts, tabId) {
   // at the bottom). innerWidth/innerHeight × devicePixelRatio gives the
   // physical pixels that match what tabCapture actually delivers.
   const dims = await getViewport(tab?.id);
+  // A blip that ran out of time may have shown its glow just before its
+  // deadline, and the wait for it to fade was skipped along with the blip.
+  // The viewport read above has already used up part of that wait.
+  if (blipOver > Date.now()) await sleep(blipOver - Date.now());
   // Stop removes `rec`, and it can land while the blip or the viewport read is
   // still under way: up to two deadlines on a page that never answers. A
   // recorder started after that would run on with nothing that can stop it.
@@ -516,7 +520,10 @@ async function getViewport(tabId) {
 // itself shows up in the first ~Ns of the recorded output (canonical Screenity
 // pattern: animate UI cue → wait for it to fade → start capture on clean DOM).
 const BLIP_ANIM_MS = 650;
+// Answers the moment the page's glow is over, for a glow the page showed just
+// before its deadline: 0 whenever the wait below has already covered it.
 async function blipRecordingIndicator(tabId) {
+  const deadline = Date.now() + SCRIPT_TIMEOUT_MS; // when the start stops waiting for the script
   try {
     await scriptWithTimeout({
       target: { tabId },
@@ -530,7 +537,7 @@ async function blipRecordingIndicator(tabId) {
         o.animate([{ opacity: 0 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], { duration: animMs, easing: 'ease-out' })
           .onfinish = () => o.remove();
       },
-      args: [BLIP_ANIM_MS, Date.now() + SCRIPT_TIMEOUT_MS],
+      args: [BLIP_ANIM_MS, deadline],
     });
   } catch (e) {
     // chrome:// URLs and similar refuse executeScript — skip the wait so we
@@ -539,9 +546,14 @@ async function blipRecordingIndicator(tabId) {
     // Expected on those pages, so only a warning: chrome://extensions lists
     // every console.error from the worker as an extension error.
     console.warn('[ViewShot] blip failed:', e);
-    return;
+    // A page that refuses scripts fails at once and shows nothing. A page that
+    // ran out of time may have run the script just before its deadline, so its
+    // glow can still be on screen: the start has to hold the recorder until the
+    // animation is over.
+    return Date.now() < deadline ? 0 : deadline + BLIP_ANIM_MS + 50;
   }
   await new Promise((r) => setTimeout(r, BLIP_ANIM_MS + 50));
+  return 0;
 }
 
 async function stopRecording() {

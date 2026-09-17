@@ -1411,3 +1411,53 @@ test('the frame cap still flashes MAX when it ends a recording', async () => {
   assert.deepStrictEqual(sent, ['rec-stop-offscreen'], 'the recording was never stopped');
   assert.strictEqual(store.rec, undefined, 'the recording was left marked as running');
 });
+
+// --- a blip the page runs just before its deadline --------------------------
+// A start stops waiting for the edge-glow blip at its deadline. A page that ran
+// the script just before that had already shown the glow, and the start skipped
+// the wait for it to fade along with the blip: the recorder started mid-glow.
+
+test('a start holds the recorder for a glow the page showed just before the blip\'s deadline', async () => {
+  const bg = loadBg();
+  const { chrome, document } = bg.ctx;
+  keepStore(chrome);
+  chrome.offscreen = { hasDocument: async () => true };
+  const glows = [];
+  let startedAt;
+  document.createElement = () => ({ style: {}, animate: () => ({}) });
+  document.documentElement.appendChild = () => glows.push(bg.ctx.Date.now());
+  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') startedAt = bg.ctx.Date.now(); };
+  const run = chrome.scripting.executeScript;
+  let calls = 0;
+  // The page runs the blip 100 ms before its deadline, and its answer never arrives.
+  chrome.scripting.executeScript = (o) => (++calls === 1
+    ? new Promise(() => { bg.tick(vm.runInContext('SCRIPT_TIMEOUT_MS', bg.ctx) - 100); run(o); })
+    : run(o));
+  const start = bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
+  await settle();
+  bg.tick(100);
+  bg.expire(); // the start stops waiting for the blip
+  await start;
+  assert.strictEqual(glows.length, 1, 'the page showed no glow');
+  assert.ok(startedAt - glows[0] >= vm.runInContext('BLIP_ANIM_MS', bg.ctx), 'the recorder started while the glow was still showing');
+});
+
+test('a start on a page that refuses scripts holds the recorder for nothing', async () => {
+  const bg = loadBg({ scriptFails: true });
+  const { chrome } = bg.ctx;
+  keepStore(chrome);
+  chrome.offscreen = { hasDocument: async () => true };
+  let startedAt;
+  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') startedAt = bg.ctx.Date.now(); };
+  const pressed = bg.ctx.Date.now();
+  await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
+  assert.strictEqual(startedAt, pressed, 'the recorder waited out a glow the page never showed');
+});
+
+test('a blip the page answers in time leaves the start nothing to hold for', async () => {
+  const bg = loadBg();
+  const { document } = bg.ctx;
+  document.createElement = () => ({ style: {}, animate: () => ({}) });
+  const held = await bg.ctx.blipRecordingIndicator(TAB.id); // the glow faded inside the blip's own wait
+  assert.strictEqual(held, 0, 'the start was told to hold on for a glow that had already gone');
+});
