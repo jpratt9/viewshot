@@ -40,7 +40,7 @@ function smoothEl(scrollHeight, clientHeight) {
 
 // background.js in a sandbox wired to a fake page. chrome.*, the canvas, and
 // the capture are all mocked — nothing real is touched.
-function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, leaveAt = 0, leave = {}, frozen = false, sameAt = [] }) {
+function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, leaveAt = 0, leave = {}, frozenAt = 0, sameAt = [] }) {
   const canvases = [];
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; this.draws = []; canvases.push(this); }
@@ -65,6 +65,9 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
     // Collapse the settle sleeps so tests stay fast. The capture deadline never passes.
     setTimeout: (fn, ms) => { if (ms !== captureTimeout) fn(); },
     document: { documentElement: de, body, scrollingElement: de, querySelectorAll: () => fixed },
+    // A window that is drawing runs the callback; from frozenAt on it never does.
+    // The probe for slice k runs before capture k, so captureAt is one short.
+    requestAnimationFrame: (cb) => { if (!frozenAt || captureAt.length < frozenAt - 1) cb(); },
     getComputedStyle: (e) => ({ position: fixed.includes(e) ? (e.pos || 'fixed') : 'static' }),
     window: {
       innerWidth: iw, innerHeight: ih, devicePixelRatio: dpr,
@@ -80,7 +83,8 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
       scripting: {
         executeScript: async ({ func, args }) => {
           scriptCalls.push(func.name || 'anon');
-          return [{ result: func.apply(null, args || []) }];
+          // Chrome awaits a function that returns a promise; the frame report does.
+          return [{ result: await func.apply(null, args || []) }];
         },
       },
       tabs: {
@@ -91,7 +95,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
           // A window that draws hands back a different frame at each offset; one
           // that isn't drawing hands back the frame it last presented, forever.
           // sameAt: the slices a flat stretch of page shoots identically.
-          if (frozen || sameAt.includes(captureAt.length)) return last;
+          if ((frozenAt && captureAt.length >= frozenAt) || sameAt.includes(captureAt.length)) return last;
           return (last = PNG + at);
         },
         // From capture `leaveAt` on, the tab is no longer the one showing in
@@ -315,7 +319,7 @@ test('runs no sticky pass on a page that fits one screen', async () => {
   const { ctx, scriptCalls } = load({ de: el(700, 700), body: el(700, 700), ih: 700 });
   await ctx.captureFullPage(TAB);
   // measurePage, the one scroll, and the scroll back: no marking, no hiding.
-  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'scrollAndReport'], 'ran the sticky passes on a page with one slice');
+  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'reportFrame', 'scrollAndReport'], 'ran the sticky passes on a page with one slice');
 });
 
 test('marks and hides once on a page that needs several slices', async () => {
@@ -333,16 +337,23 @@ test('marks and hides once on a page that needs several slices', async () => {
 // every offset and saved a tall image that is the first screen over and over.
 
 test('stops rather than stitch the same frame down the canvas', async () => {
-  const { ctx, canvases } = load({ de: el(767, 767), body: el(3052, 767), frozen: true });
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(3052, 767), frozenAt: 1 });
   await assert.rejects(() => ctx.captureFullPage(TAB), /not drawing/);
-  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 1534], 'stitched the repeated frame down the canvas');
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [], 'stitched a frame the window never drew');
+});
+
+test('stops when the window stops drawing on the last slice', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(3052, 767), frozenAt: 4 });
+  await assert.rejects(() => ctx.captureFullPage(TAB), /not drawing/);
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 1534, 3068],
+    'saved a last slice repeating the one before it');
 });
 
 test('puts the page back when the window stops drawing', async () => {
   const body = el(3052, 767);
   body.scrollTop = 640;
   const header = { style: { visibility: '' } };
-  const { ctx } = load({ de: el(767, 767), body, fixed: [header], frozen: true });
+  const { ctx } = load({ de: el(767, 767), body, fixed: [header], frozenAt: 2 });
   await assert.rejects(() => ctx.captureFullPage(TAB), /not drawing/);
   assert.strictEqual(body.scrollTop, 640, 'left scrolled to where the stitch stopped');
   assert.strictEqual(header.style.visibility, '', 'left the pinned header hidden');
@@ -362,7 +373,9 @@ test('saves a page whose flat stretch shoots the same slice twice', async () => 
     'a long gap or a plain background lost the whole capture');
 });
 
-test('stops once the same frame comes back twice over', async () => {
-  const { ctx } = load({ de: el(767, 767), body: el(3052, 767), sameAt: [3, 4] });
-  await assert.rejects(() => ctx.captureFullPage(TAB), /not drawing/);
+test('saves a page flat enough to shoot the same slice three times over', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(3052, 767), sameAt: [2, 3, 4] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 1534, 3068, 4570],
+    'a page of one flat colour lost the whole capture');
 });

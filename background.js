@@ -105,6 +105,10 @@ function captureWithTimeout(windowId) {
 // only works for about 10 s: Chrome 152 took one used at 9.2 s and refused one
 // used at 10.3 s. Two 2 s deadlines leave a start, and one queued behind it,
 // time to use theirs.
+// How long the page gets to produce a frame before the stitch gives up on it.
+// A window that is drawing answers in about 16ms; one that isn't never will,
+// and the wait is paid once, on the slice the capture stops at.
+const FRAME_TIMEOUT_MS = 1000;
 const SCRIPT_TIMEOUT_MS = 2000;
 function scriptWithTimeout(injection) {
   return Promise.race([
@@ -196,6 +200,25 @@ function scrollAndReport(to) {
   return el.scrollTop;
 }
 
+// Ask the page for a frame. A window that isn't drawing - minimized, occluded -
+// presents none, so requestAnimationFrame never runs and the timer answers false
+// instead: timers keep running in a window that isn't presenting, which is what
+// makes them the half of this that can always answer. Runs in the page, so it
+// can't read FRAME_TIMEOUT_MS and is handed it.
+function reportFrame(ms) {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve(true));
+    setTimeout(() => resolve(false), ms); // whichever lands first wins; the other is a no-op
+  });
+}
+
+async function pageIsDrawing(tab) {
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id }, func: reportFrame, args: [FRAME_TIMEOUT_MS],
+  });
+  return result === true;
+}
+
 // Scroll to y and report where the page ACTUALLY landed. The caller stitches
 // at the returned offset rather than the requested one, so a page that clamps,
 // animates, or ignores the scroll still produces a correctly aligned image.
@@ -219,7 +242,7 @@ async function captureFullPage(tab) {
     Array.from({ length: Math.ceil(m.total / m.vh) }, (_, i) => Math.min(i * m.vh, Math.max(0, m.total - m.vh)))
   )];
 
-  let hid = false, landed = 0, prev = '', repeats = 0;
+  let hid = false, landed = 0;
   // finally: a slice that throws part-way must still put the page back, not
   // leave it scrolled to where the stitch stopped with its headers hidden.
   try {
@@ -236,24 +259,21 @@ async function captureFullPage(tab) {
       // only; hide them on later slices so they aren't stitched in repeatedly.
       if (i === 1 && !hid) { await setFixedHidden(tab, true); hid = true; }
       await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
+      // captureVisibleTab hands back the last frame the window presented. A
+      // window that isn't drawing - minimized, occluded - presents none, so
+      // every slice comes back as the frame before it. The offsets still
+      // advance and the tab is still the one showing, so neither guard here
+      // catches it, and the stitch drew that one screen at every offset and
+      // saved a tall image that is the same screen over and over, with nothing
+      // to say so. Ask the page for a frame rather than compare the pixels: a
+      // flat stretch of page shoots the same bytes twice while drawing fine.
+      if (!await pageIsDrawing(tab)) throw new Error('Full page stopped: the window is not drawing (minimized?)');
       const url = await captureVisible(tab.windowId);
       // captureVisibleTab shoots whichever tab is showing in the window. If the
       // user switched tabs (or moved this one out) mid-stitch, this slice is
       // another tab: stop rather than stitch it in.
       const now = await chrome.tabs.get(tab.id);
       if (!now.active || now.windowId !== tab.windowId) throw new Error('Full page stopped: another tab is now showing');
-      // captureVisibleTab hands back the last frame the window presented. A
-      // window that isn't drawing - minimized, occluded - presents none, so
-      // every slice comes back as the frame before it. The offsets still
-      // advance and the tab is still the one showing, so neither guard above
-      // fires: the stitch drew that one screen at every offset and saved a tall
-      // image that is the first screen over and over, with nothing to say so.
-      // Twice over, not once: a flat stretch of page - a long gap, a plain
-      // background, and no scrollbar to move since it is hidden by default -
-      // really does shoot the same bytes at two offsets, and must still save.
-      repeats = url === prev ? repeats + 1 : 0;
-      if (repeats >= 2) throw new Error('Full page stopped: the window is not drawing (minimized?)');
-      prev = url;
       const bmp = await createImageBitmap(await (await fetch(url)).blob());
       ctx.drawImage(bmp, 0, Math.round(actual * m.dpr)); // where it really is, not where we asked
     }
