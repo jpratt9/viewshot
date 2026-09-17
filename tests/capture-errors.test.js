@@ -1322,3 +1322,25 @@ test('a blip the page runs before its deadline still shows its glow', async () =
   await blip;
   assert.strictEqual(glows.length, 1, 'the glow was skipped although the page ran the script in time');
 });
+
+// --- a start that doesn't wait for the blip's glow --------------------------
+// A start waits for the edge-glow blip's glow to fade before it starts the
+// recorder, or the glow ends up in the recording. loadBg's elements can't
+// animate, so every start these tests ran had a blip that threw and skipped
+// that wait: deleting it failed no test.
+
+test('a start waits for the blip\'s glow to finish before it starts the recorder', async () => {
+  const bg = loadBg();
+  const { chrome, document } = bg.ctx;
+  keepStore(chrome); // the start reads `rec` back before it starts the recorder
+  chrome.offscreen = { hasDocument: async () => true };
+  const glows = [];
+  let startedAt;
+  document.createElement = () => ({ style: {}, animate: () => ({}) });
+  document.documentElement.appendChild = () => glows.push(bg.ctx.Date.now());
+  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') startedAt = bg.ctx.Date.now(); };
+  await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
+  assert.strictEqual(glows.length, 1, 'the blip showed no glow');
+  assert.ok(startedAt !== undefined, 'the recording was never started');
+  assert.ok(startedAt - glows[0] >= vm.runInContext('BLIP_ANIM_MS', bg.ctx), 'the recorder started while the glow was still showing');
+});
