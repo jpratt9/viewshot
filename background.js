@@ -13,8 +13,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // Answered once the start has worked or failed: the popup enables Stop
     // from `rec`, and a start that fails before `rec` is written leaves
     // nothing there for it to see.
-    startRecording(msg.streamId, msg.opts, msg.tabId)
+    const start = recStartGate
+      .then(() => startRecording(msg.streamId, msg.opts, msg.tabId))
       .then(() => sendResponse(true), (e) => { console.error('[ViewShot]', e); sendResponse(false); return recFailed(); });
+    recStartGate = start.catch(() => {}); // one start's failure must not stall the next
     return true;
   }
   else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
@@ -410,6 +412,12 @@ async function flashBadge(text) {
 function recFailed() {
   return chrome.storage.local.remove('rec').then(() => flashBadge('!'));
 }
+
+// Starts go through this gate one at a time, each once the one before has
+// finished, cleanup included. startRecording checks `rec` and writes it only
+// after several awaits, so two starts that overlapped both got past the check,
+// and a second one that then failed removed the `rec` the first had written.
+let recStartGate = Promise.resolve();
 
 async function startRecording(streamId, opts, tabId) {
   log('rec-start received, opts=', opts, 'streamId=', streamId);

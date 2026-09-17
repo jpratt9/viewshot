@@ -1027,3 +1027,81 @@ for (const [what, reply] of [['says the start failed', false], ['can\'t be reach
     assert.deepStrictEqual(p.sent.map((m) => m.type), ['rec-start', 'rec-start']);
   });
 }
+
+// --- two recordings started at once -----------------------------------------
+// startRecording checks `rec` and writes it only after several awaits. Two
+// starts inside that gap both got past the check, and when the second then
+// failed, its cleanup removed the `rec` the first had written: Stop could no
+// longer end the first recording.
+
+// chrome.storage.local that keeps what is written to it.
+function keepStore(chrome) {
+  const store = {};
+  Object.assign(chrome.storage.local, {
+    get: async (k) => (k in store ? { [k]: store[k] } : {}),
+    set: async (o) => { Object.assign(store, o); },
+    remove: async (k) => { delete store[k]; },
+  });
+  return store;
+}
+
+test('a second start that fails leaves the first recording its rec', async () => {
+  const bg = loadBg();
+  const { chrome } = bg.ctx;
+  const store = keepStore(chrome);
+  const sent = [];
+  const replies = [];
+  let closeSecondTab;
+  chrome.offscreen = { hasDocument: async () => true };
+  chrome.runtime.sendMessage = async (m) => { sent.push(m.type); };
+  const get = chrome.tabs.get;
+  // The second start's tab closes, but only once the first start has written rec.
+  chrome.tabs.get = (id) => (id === 99 ? new Promise((_, no) => { closeSecondTab = () => no(new Error('No tab with id: 99.')); }) : get(id));
+  bg.message(WEBM_START, (r) => replies.push(r));
+  bg.message({ ...WEBM_START, streamId: 'sid2', tabId: 99 }, (r) => replies.push(r));
+  await settle();
+  closeSecondTab?.();
+  await settle();
+  assert.strictEqual(store.rec?.url, TAB.url, 'the second start removed the first recording\'s rec');
+  assert.deepStrictEqual(sent, ['rec-start-offscreen'], 'the offscreen document was told to start twice');
+  assert.deepStrictEqual(bg.badges, ['REC'], 'REC was flashed away over a running recording');
+  assert.deepStrictEqual(replies, [true, true]);
+});
+
+test('a start that fails, cleanup and all, does not hold up the next one', async () => {
+  const bg = loadBg();
+  const { chrome } = bg.ctx;
+  const store = keepStore(chrome);
+  const replies = [];
+  chrome.offscreen = { hasDocument: async () => true };
+  const remove = chrome.storage.local.remove;
+  chrome.storage.local.remove = async () => { chrome.storage.local.remove = remove; throw new Error('storage failed'); };
+  bg.message({ ...WEBM_START, tabId: 99 }, (r) => replies.push(r)); // its tab has closed
+  bg.message(WEBM_START, (r) => replies.push(r));
+  await settle();
+  assert.deepStrictEqual(replies, [false, true], 'the next start was never run');
+  assert.strictEqual(store.rec?.url, TAB.url, 'the next start was never run');
+});
+
+test('a start queued behind one that fails waits for its cleanup', async () => {
+  const bg = loadBg();
+  const { chrome } = bg.ctx;
+  const store = keepStore(chrome);
+  const replies = [];
+  const started = [];
+  chrome.offscreen = { hasDocument: async () => true };
+  const remove = chrome.storage.local.remove;
+  chrome.storage.local.remove = (k) => Promise.resolve().then(() => remove(k)); // lands a moment later, as Chrome's does
+  let unreachable = true; // the first start's rec-start-offscreen never arrives
+  chrome.runtime.sendMessage = async (m) => {
+    if (m.type !== 'rec-start-offscreen') return;
+    if (unreachable) { unreachable = false; throw new Error(UNREACHABLE); }
+    started.push(m.streamId);
+  };
+  bg.message(WEBM_START, (r) => replies.push(r));
+  bg.message({ ...WEBM_START, streamId: 'sid2' }, (r) => replies.push(r));
+  await settle();
+  assert.deepStrictEqual(replies, [false, true]);
+  assert.deepStrictEqual(started, ['sid2'], 'the second start took the failed start\'s rec for a running recording');
+  assert.strictEqual(store.rec?.url, TAB.url, 'the second recording was left without its rec');
+});
