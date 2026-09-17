@@ -864,3 +864,16 @@ test('a settings change while the popup is opening leaves load() to set Stop and
   assert.strictEqual(p.els.stopBtn.disabled, false, 'Stop was greyed out mid-recording');
   assert.strictEqual(p.btn('visible').disabled, true, 'Record came back mid-recording');
 });
+
+// --- a setting saved while the popup is opening -----------------------------
+// load() leaves the form alone once save() has run, because storage then holds
+// what the form shows. It still sets Stop, and Record has to follow it.
+
+test('Record follows a running recording when a setting is saved while the popup is opening', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'webm' }, rec: RUNNING } });
+  p.els.format.value = 'webm'; // picked after load() read storage, before it went on
+  p.els.format.listeners.change[0]();
+  await p.ready();
+  assert.strictEqual(p.els.stopBtn.disabled, false, 'Stop was greyed out mid-recording');
+  assert.strictEqual(p.btn('visible').disabled, true, 'Record was left enabled over a running recording');
+});

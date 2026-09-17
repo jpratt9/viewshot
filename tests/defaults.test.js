@@ -204,3 +204,27 @@ test('still migrates the old filename default through the cache path', () => {
   const popup = bootPopup({}, { format: 'jpg', filename: 'shot-{date}' });
   assert.strictEqual(popup.els.filename.value, DEFAULT_NAME);
 });
+
+// --- a setting changed while the popup is opening ---------------------------
+// load() waits on a storage read and a tab query, and the form is filled in
+// from the cache before that. A setting changed during the wait was saved, and
+// then load() put the older stored value back in the form.
+
+test('a Name changed while the popup is opening stays in the form', async () => {
+  const popup = bootPopup({ opts: { format: 'png', filename: 'stored' } }, { format: 'png', filename: 'stored' });
+  popup.els.filename.value = 'renamed'; // after load() read storage, before it went on
+  popup.els.filename.listeners.change[0]();
+  await popup.settle();
+  assert.strictEqual(popup.els.filename.value, 'renamed', 'load() put the older Name back in the form');
+  assert.strictEqual(popup.store.opts.filename, 'renamed');
+});
+
+test('a format changed while the popup is opening stays in the form', async () => {
+  const popup = bootPopup({ opts: { format: 'png' } }, { format: 'png' });
+  popup.els.format.value = 'jpg'; // after load() read storage, before it went on
+  popup.els.format.listeners.change[0]();
+  await popup.settle();
+  assert.strictEqual(popup.els.format.value, 'jpg', 'load() put the older format back in the form');
+  assert.strictEqual(popup.els.qualityRow.style.display, 'flex', 'the quality row no longer matches the format');
+  assert.strictEqual(popup.store.opts.format, 'jpg');
+});

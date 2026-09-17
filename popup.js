@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id);
 const isRecFmt = (f) => f === 'webm' || f === 'mp4' || f === 'gif';
 let activeTab = null;
 let recChanged = false; // the storage listener at the bottom has seen `rec` change
+let optsSaved = false; // save() has stored the form since the popup opened
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
 
@@ -59,7 +60,11 @@ async function load() {
   // `rec` changed while this function waited: the storage listener has already
   // set Stop from that change, which can be newer than `stored.rec`.
   if (!recChanged) $('stopBtn').disabled = !stored.rec;
-  apply(migrate({ ...DEFAULTS, ...(stored.opts || {}) }));
+  // If save() ran while this function waited, storage already holds what the
+  // form shows, and `stored.opts` is older: leave the form alone. Record still
+  // has to follow the Stop set above.
+  if (optsSaved) toggleRec();
+  else apply(migrate({ ...DEFAULTS, ...(stored.opts || {}) }));
 }
 
 function read() {
@@ -73,6 +78,7 @@ function read() {
 }
 
 const save = () => {
+  optsSaved = true;
   const o = read();
   try { localStorage.setItem('opts', JSON.stringify(o)); } catch { /* mirror is best-effort */ }
   return chrome.storage.local.set({ opts: o });
