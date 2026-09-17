@@ -51,7 +51,15 @@ async function startRecording(streamId, format, width, height) {
   log('requesting getUserMedia for streamId', streamId, 'mandatory=', mandatory);
   const start = { stopped: false };
   lastStart = start;
-  const stream = await navigator.mediaDevices.getUserMedia({ video: { mandatory } });
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { mandatory } });
+  } catch (e) {
+    // A start stopped while getUserMedia was answering has nothing to report:
+    // rec-failed would flash ! right after the user's own Stop.
+    if (start.stopped) { console.warn('[ViewShot] getUserMedia failed for a start that was already stopped:', e); return; }
+    throw e;
+  }
   log('got MediaStream, video tracks:', stream.getVideoTracks().length);
   // The worker reads `rec` for the last time before it sends rec-start-offscreen,
   // so its Stop can still arrive while getUserMedia is answering. The worker has

@@ -1252,3 +1252,35 @@ test('a Stop that reaches a document that never started a recording does nothing
   assert.doesNotThrow(() => o.ctx.stopRecording('out.webm'), 'a Stop with no start to mark threw'); // the worker's rec-stop-offscreen
   assert.strictEqual(busy(o), false, 'the document was left busy with nothing to save');
 });
+
+// --- a stopped start whose getUserMedia fails -------------------------------
+// A start stopped while getUserMedia was answering only checked for that Stop
+// once getUserMedia answered. When getUserMedia failed instead, the start
+// reported rec-failed, and the worker flashed ! right after the user's Stop.
+
+test('a start stopped while it waits on getUserMedia reports nothing when getUserMedia then fails', async () => {
+  const o = loadOffscreen();
+  const refused = new Error('Error starting tab capture');
+  const warnings = [];
+  o.ctx.console.warn = (...args) => warnings.push(args);
+  let refuse;
+  o.ctx.navigator.mediaDevices.getUserMedia = () => new Promise((res, rej) => { refuse = () => rej(refused); });
+  o.message({ type: 'rec-start-offscreen', streamId: 'sid', format: 'webm', width: 100, height: 100 });
+  o.message({ type: 'rec-stop-offscreen', filename: 'out.webm' });
+  refuse();
+  await settle();
+  assert.deepStrictEqual(o.sent, [], 'the stopped start reported its failure');
+  assert.ok(warnings.some((w) => w.includes(refused)), 'the failure left no trace in the console');
+});
+
+test('a start whose getUserMedia fails, with no Stop, still reports it', async () => {
+  const o = loadOffscreen();
+  const refused = new Error('Error starting tab capture');
+  const errors = [];
+  o.ctx.console.error = (...args) => errors.push(args);
+  o.ctx.navigator.mediaDevices.getUserMedia = async () => { throw refused; };
+  o.message({ type: 'rec-start-offscreen', streamId: 'sid', format: 'webm', width: 100, height: 100 });
+  await settle();
+  assert.deepStrictEqual(o.sent.map((m) => m.type), ['rec-failed'], 'the failed start was never reported');
+  assert.strictEqual(errors[0]?.[1], refused, 'the error logged is not the one getUserMedia failed with');
+});
