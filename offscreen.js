@@ -29,6 +29,11 @@ async function copyToClipboard(dataUrl) {
 const GIF_FPS = 10;
 const GIF_MAX_WIDTH = 720;
 const GIF_MAX_FRAMES = 600; // ~60s cap so addFrame copies don't exhaust memory
+// A video fed by a live capture stream is ready in a few ms: 2 ms on an idle
+// page, 80 ms right after a busy one. One that never answers used to hold this
+// document for good, so the wait gives up after the same 2 s the worker allows
+// its own page calls (SCRIPT_TIMEOUT_MS).
+const VIDEO_TIMEOUT_MS = 2000;
 let rec = null; // { stream, format, recorder?, chunks?, gif?, timer?, frames? }
 let saving = 0; // recordings stopped but not saved yet (see stopRecording)
 let lastStart = null; // { stopped }, so a Stop can reach a start still waiting on getUserMedia
@@ -78,8 +83,22 @@ async function startRecording(streamId, format, width, height) {
     const video = document.createElement('video');
     video.srcObject = stream;
     video.muted = true;
-    await new Promise((res) => { video.onloadedmetadata = res; });
-    await video.play();
+    // One deadline covers both waits, since nothing sits between them. Without
+    // it, a video that never answered left `rec` set with no encoder in it: the
+    // document refused every later start, answered offscreen-busy with true so
+    // the worker could never close it, and kept the capture stream running.
+    try {
+      await Promise.race([
+        (async () => { await new Promise((res) => { video.onloadedmetadata = res; }); await video.play(); })(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`the video did not start within ${VIDEO_TIMEOUT_MS / 1000}s`)), VIDEO_TIMEOUT_MS)),
+      ]);
+    } catch (e) {
+      // A start the user has already stopped has nothing to report: rec-failed
+      // would flash ! right after their own Stop. The check below is its
+      // cleanup either way.
+      if (!start.stopped) throw e; // onRecError tears this start down and reports it
+      console.warn('[ViewShot] the video never started for a start that was already stopped:', e);
+    }
     // A Stop can land in those two waits as well. `rec` is set by now, so
     // stopRecording marks this start stopped and leaves the cleanup here:
     // nothing has been captured, and the worker has already removed `rec` and

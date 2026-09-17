@@ -1461,3 +1461,37 @@ test('a blip the page answers in time leaves the start nothing to hold for', asy
   const held = await bg.ctx.blipRecordingIndicator(TAB.id); // the glow faded inside the blip's own wait
   assert.strictEqual(held, 0, 'the start was told to hold on for a glow that had already gone');
 });
+
+// --- a GIF start whose video never loads ------------------------------------
+// A GIF start sets `rec` and then waits for its video's metadata and play().
+// Neither wait had a deadline, so a video that never answered left `rec` set
+// with no encoder in it: the document refused every later start, answered
+// offscreen-busy with true so the worker could never close it, and kept the
+// capture stream running.
+
+const GIF_START = { type: 'rec-start-offscreen', streamId: 'sid', format: 'gif', width: 100, height: 100 };
+
+test('a GIF start whose video never loads gives up, reports it, and lets the next one run', async () => {
+  const o = loadOffscreen();
+  o.message(GIF_START);
+  await settle();
+  assert.strictEqual(busy(o), true, 'the start never got as far as its video');
+  o.runTimers(); // the video's deadline passes
+  await settle();
+  assert.strictEqual(busy(o), false, 'the document was left marked as recording with no encoder in it');
+  assert.deepStrictEqual(o.sent.map((m) => m.type), ['rec-failed'], 'the start that gave up was never reported');
+  o.message({ ...GIF_START, format: 'webm' });
+  await settle();
+  assert.strictEqual(o.recorders.length, 1, 'the document refused the next start');
+});
+
+test('a GIF start stopped while its video hangs reports nothing', async () => {
+  const o = loadOffscreen();
+  o.message(GIF_START);
+  await settle();
+  o.ctx.stopRecording('out.gif'); // the user's Stop, with no encoder to stop
+  o.runTimers(); // the deadline passes after it
+  await settle();
+  assert.strictEqual(busy(o), false, 'the stopped start left the document marked as recording');
+  assert.deepStrictEqual(o.sent, [], 'the stopped start flashed a failure over the user\'s own Stop');
+});
