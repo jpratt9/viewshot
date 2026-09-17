@@ -490,13 +490,15 @@ function loadOffscreen() {
   FakeRecorder.isTypeSupported = () => true;
 
   const sent = [];
+  const timers = []; // download()'s URL revoke, a minute on
+  let onMessage;
   const trackListeners = {};
   const track = { stop() {}, addEventListener: (type, fn) => { trackListeners[type] = fn; } };
   const stream = { getVideoTracks: () => [track], getTracks: () => [track] };
   const context = {
     console: { ...console, error: () => {}, warn: () => {}, log: () => {} },
     chrome: {
-      runtime: { onMessage: { addListener() {} }, sendMessage: async (m) => { sent.push(m); }, getURL: (p) => p },
+      runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, sendMessage: async (m) => { sent.push(m); }, getURL: (p) => p },
     },
     navigator: { mediaDevices: { getUserMedia: async () => stream } },
     MediaRecorder: FakeRecorder,
@@ -506,14 +508,18 @@ function loadOffscreen() {
       createElement: () => ({ style: {}, click() {}, remove() {}, appendChild() {} }),
       body: { appendChild() {} },
     },
-    setTimeout: () => 0, clearInterval: () => {}, setInterval: () => 0,
+    setTimeout: (fn) => { timers.push(fn); return 0; }, clearInterval: () => {}, setInterval: () => 0,
     GIF: class {},
   };
   vm.createContext(context);
   vm.runInContext(read('offscreen.js'), context);
-  // download() writes through an <a>, so swap it out and keep the Blob instead.
-  vm.runInContext('download = (blob, name) => { __downloads.push([blob, name]); };', Object.assign(context, { __downloads: downloads }));
-  return { ctx: context, recorders, downloads, sent, endTrack: () => trackListeners.ended() };
+  // download() writes through an <a>, so keep each Blob on its way through.
+  vm.runInContext('download = ((real) => (blob, name) => { __downloads.push([blob, name]); real(blob, name); })(download);', Object.assign(context, { __downloads: downloads }));
+  return {
+    ctx: context, recorders, downloads, sent, endTrack: () => trackListeners.ended(),
+    message: (msg, respond = () => {}) => onMessage(msg, {}, respond),
+    runTimers: () => timers.splice(0).forEach((fn) => fn()),
+  };
 }
 
 test('the final flush after stop() still lands in the recording', async () => {
@@ -1167,4 +1173,43 @@ test('a start stopped while it waits on the page records nothing, and the next s
   assert.deepStrictEqual(replies, [true, true], 'the next start was never run');
   assert.deepStrictEqual(started, ['sid2'], 'the stopped start went on to record');
   assert.strictEqual(store.rec?.url, TAB.url, 'the next recording was left without its rec');
+});
+
+// --- a capture while a stopped recording is still being saved ---------------
+// The worker removes `rec` before the offscreen document hears about the Stop,
+// and the recording is saved in the document after that: a GIF is encoded
+// first, and the file then downloads from a URL the document owns. A clipboard
+// copy in that window closed the document, and the recording was never saved.
+// The worker now asks the document before it closes it.
+
+const busy = (o) => { let answer; o.message({ type: 'offscreen-busy' }, (a) => { answer = a; }); return answer; };
+
+test('a GIF keeps its document busy from its stop until the download is done with the file', async () => {
+  const o = loadOffscreen();
+  const gif = { on: (event, fn) => { gif[event] = fn; }, render() {} };
+  vm.runInContext("rec = { format: 'gif', gif: __gif, stream: { getTracks: () => [] } }", Object.assign(o.ctx, { __gif: gif }));
+  assert.strictEqual(busy(o), true, 'the worker could close the document before the stop arrived');
+  o.ctx.stopRecording('out.gif');
+  assert.strictEqual(busy(o), true, 'the worker could close the document mid-encode');
+  gif.finished({ size: 10 }); // gif.js has finished encoding
+  assert.deepStrictEqual(o.downloads.map(([, name]) => name), ['out.gif']);
+  assert.strictEqual(busy(o), true, 'the worker could close the document while the download still needs the file');
+  o.runTimers();
+  assert.strictEqual(busy(o), false, 'the document stayed busy after its file was saved');
+});
+
+test('a WebM keeps its document busy from its stop until the download is done with the file', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const r = o.recorders[0];
+  r.flush({ size: 10 });
+  assert.strictEqual(busy(o), true, 'the worker could close the document before the stop arrived');
+  o.ctx.stopRecording('out.webm');
+  assert.strictEqual(busy(o), true, 'the worker could close the document before the final flush');
+  r.finish();
+  await settle();
+  assert.deepStrictEqual(o.downloads.map(([, name]) => name), ['out.webm']);
+  assert.strictEqual(busy(o), true, 'the worker could close the document while the download still needs the file');
+  o.runTimers();
+  assert.strictEqual(busy(o), false, 'the document stayed busy after its file was saved');
 });

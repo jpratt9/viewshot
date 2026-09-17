@@ -5,6 +5,9 @@ log('offscreen loaded, GIF available =', typeof GIF !== 'undefined');
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === 'offscreen-ping') { sendResponse('pong'); return; }
+  // Asked before the worker closes this document: a recording that is running,
+  // or stopped but not saved yet, lives only in here.
+  if (msg?.type === 'offscreen-busy') { sendResponse(!!rec || saving > 0); return; }
   // Answered so the worker can close this document once the write is done —
   // an offscreen document shares its renderer main thread with the popup, and
   // Chrome won't paint the popup until that thread lets its onload finish.
@@ -27,6 +30,7 @@ const GIF_FPS = 10;
 const GIF_MAX_WIDTH = 720;
 const GIF_MAX_FRAMES = 600; // ~60s cap so addFrame copies don't exhaust memory
 let rec = null; // { stream, format, recorder?, chunks?, gif?, timer?, frames? }
+let saving = 0; // recordings stopped but not saved yet (see stopRecording)
 
 async function startRecording(streamId, format, width, height) {
   // One recording at a time: replacing `rec` would leave the one already
@@ -121,6 +125,9 @@ async function startRecording(streamId, format, width, height) {
 function stopRecording(filename) {
   if (!rec) return;
   const { stream, format } = rec;
+  // Saved only later: a GIF is encoded first, a video waits for its final
+  // flush, and download() still needs the file's URL for a minute after that.
+  saving++;
 
   if (format === 'gif') {
     if (rec.timer) clearInterval(rec.timer);
@@ -162,7 +169,7 @@ function download(blob, filename) {
   const a = document.createElement('a');
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  setTimeout(() => { URL.revokeObjectURL(url); saving--; }, 60000);
 }
 
 // Release everything this document holds. The frame timer and the capture

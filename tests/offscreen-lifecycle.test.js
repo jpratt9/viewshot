@@ -102,6 +102,26 @@ test('leaves the document alone while a recording is running', async () => {
   assert.strictEqual(docLives(), true);
 });
 
+// A stopped recording is still saved in there: `rec` is removed before the
+// document hears about the Stop, a GIF is encoded, and the file downloads from
+// a URL the document owns. A clipboard copy in that window closed the document,
+// and the recording was never saved.
+test('leaves the document alone while a stopped recording is still being saved in it', async () => {
+  const { ctx, calls, docLives } = load({ hasDoc: true }); // Stop has removed `rec`
+  let saving = true;
+  ctx.chrome.runtime.sendMessage = async (m) => {
+    calls.sent.push(m);
+    if (m.type === 'offscreen-busy') return saving;
+    return m.type === 'offscreen-ping' ? 'pong' : 'done';
+  };
+  await ctx.copyImage(PNG);
+  assert.strictEqual(calls.close, 0, 'closing mid-encode would lose the GIF');
+  assert.strictEqual(docLives(), true);
+  saving = false; // saved, and the download is done with the file
+  await ctx.copyImage(PNG);
+  assert.strictEqual(calls.close, 1, 'the document outlived the recording it was saving');
+});
+
 // --- unless the browser or the extension ended it -----------------------------
 // `rec` is kept in chrome.storage.local so a recording outlives a worker
 // restart. It also outlived Chrome quitting and the extension reloading, which

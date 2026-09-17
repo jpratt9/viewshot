@@ -391,7 +391,14 @@ async function closeOffscreen() {
   const { rec } = await chrome.storage.local.get('rec');
   if (rec) return; // a recording lives in there; closing would kill it
   try {
-    if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
+    if (!(await chrome.offscreen.hasDocument())) return;
+    // `rec` is removed before the document hears about the Stop, and the
+    // recording is only saved after that: a GIF is encoded first, which can take
+    // a while, and the file then downloads from a URL the document owns. Closing
+    // the document in between lost the recording, so ask it first. One that
+    // can't answer has no recording in it.
+    if ((await chrome.runtime.sendMessage({ type: 'offscreen-busy' }).catch(() => false)) === true) return;
+    await chrome.offscreen.closeDocument();
   } catch (e) {
     console.warn('[ViewShot] closeDocument failed:', e);
   }
