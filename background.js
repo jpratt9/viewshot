@@ -66,10 +66,13 @@ const CAPTURE_TIMEOUT_MS = 5000;
 // The same, for the scripts a capture runs in the page. A page whose main
 // thread never frees up never runs them, and an executeScript that never
 // answers left runCapture pending for good: the page stayed scrolled with its
-// headers and scrollbar hidden and no badge ever flashed. Longer than
-// SCRIPT_TIMEOUT_MS, which a recording's 10s stream id sets; a capture has no
-// such clock, and a page busy for a few seconds should still get its shot.
-const CAPTURE_SCRIPT_TIMEOUT_MS = 5000;
+// headers and scrollbar hidden and no badge ever flashed. Generous, because
+// the bug this fixes is "forever" and any bound fixes it, while too short a
+// bound breaks a page that was only busy: at 5s a page blocked for 20s lost a
+// capture it used to get. A screenshot has no clock of its own to race - that
+// is SCRIPT_TIMEOUT_MS's 10s stream id, for a recording - and a page still
+// blocked after half a minute is not going to produce a shot worth having.
+const CAPTURE_SCRIPT_TIMEOUT_MS = 30000;
 let captureGate = Promise.resolve();
 let lastCaptureAt = 0;
 
