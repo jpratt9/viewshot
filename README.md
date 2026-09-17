@@ -9,7 +9,7 @@ A fast, minimal, **open-source** Chrome extension for screenshots — capture th
 - Filename templates — `{date} {time} {domain} {title}`
 - Download or copy straight to clipboard
 - **Hide scrollbar before capturing** keeps the scrollbar out of screenshots (on by default)
-- Keyboard shortcuts — `Alt+Shift+V` visible area · `Alt+Shift+F` full page · `Alt+Shift+R` region (change them at `chrome://extensions/shortcuts`)
+- Keyboard shortcuts — `Alt+Shift+V` visible area · `Alt+Shift+F` full page · `Alt+Shift+R` region · `Alt+Shift+S` start/stop recording (change them at `chrome://extensions/shortcuts`). Select WebM, MP4, or GIF before starting a recording; an image format flashes `!`. The recording shortcut stops an active recording from any tab, regardless of the selected format.
 - Nothing leaves your device — see [Permissions](#permissions)
 
 ## Install (unpacked)

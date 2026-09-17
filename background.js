@@ -10,13 +10,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'capture') { sendResponse(true); runCapture(msg.mode, msg.opts, msg.tabId).catch(captureFailed); }
   else if (msg?.type === 'rec-start') {
+    if (commandStartPending) { sendResponse(false); return; }
+    recStartPending++;
     // Answered once the start has worked or failed: the popup enables Stop
     // from `rec`, and a start that fails before `rec` is written leaves
     // nothing there for it to see.
     const start = recStartGate
       .then(() => startRecording(msg.streamId, msg.opts, msg.tabId))
       .then(() => sendResponse(true), (e) => { console.error('[ViewShot]', e); sendResponse(false); return recFailed(); });
-    recStartGate = start.catch(() => {}); // one start's failure must not stall the next
+    recStartGate = start.catch(() => {}).finally(() => { recStartPending--; });
     return true;
   }
   else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
@@ -36,6 +38,37 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 chrome.commands.onCommand.addListener(async (cmd, tab) => {
+  if (cmd === 'toggle-recording') {
+    // Reserve the start before awaiting storage. Repeated keys may stop a
+    // start already marked REC, but must never queue another recording.
+    if (recStartPending) {
+      try { if (await getRec()) await stopRecording(); }
+      catch (e) { console.error('[ViewShot]', e); await flashBadge('!'); }
+      return;
+    }
+    recStartPending++;
+    commandStartPending = true;
+    const start = recStartGate.then(async () => {
+      if (await getRec()) { await stopRecording(); return; }
+      const opts = await getOpts();
+      if (!['webm', 'mp4', 'gif'].includes(opts.format)) {
+        await flashBadge('!');
+        return;
+      }
+      const target = tab?.id ? tab : await getActiveTab();
+      if (!target?.id) throw new Error('No active tab to record');
+      const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: target.id });
+      try { await startRecording(streamId, opts, target.id); }
+      catch (e) { console.error('[ViewShot]', e); await recFailed(); }
+    }).catch(async (e) => {
+      // Stream acquisition/Stop failures must not erase a live recording.
+      console.error('[ViewShot]', e);
+      await flashBadge('!');
+    });
+    recStartGate = start.catch(() => {}).finally(() => { recStartPending--; commandStartPending = false; });
+    await recStartGate;
+    return;
+  }
   const map = { 'capture-visible': 'visible', 'capture-fullpage': 'fullpage', 'capture-region': 'region' };
   if (map[cmd]) runCapture(map[cmd], await getOpts(), tab?.id).catch(captureFailed);
 });
@@ -556,6 +589,11 @@ function recFailed() {
 // after several awaits, so two starts that overlapped both got past the check,
 // and a second one that then failed removed the `rec` the first had written.
 let recStartGate = Promise.resolve();
+// Count popup starts already queued as well as the command in flight, so a
+// keyboard repeat cannot enqueue a recording that would begin after Stop.
+let recStartPending = 0;
+// Popup starts retain their queue, but must not queue behind a key press.
+let commandStartPending = false;
 
 async function startRecording(streamId, opts, tabId) {
   log('rec-start received, opts=', opts, 'streamId=', streamId);
@@ -563,9 +601,9 @@ async function startRecording(streamId, opts, tabId) {
   // offscreen document would lose the recording already running.
   const rec = await getRec();
   if (rec) { console.warn('[ViewShot] a recording is already running; not starting another'); return; }
-  // The stream id is minted in the popup (under its user gesture); we just wire
+  // The stream id is minted by the popup or keyboard command; we just wire
   // it to the offscreen recorder, which is the only context with media APIs.
-  const tab = await getActiveTab(tabId); // the tab the popup minted the stream id for
+  const tab = await getActiveTab(tabId); // the tab the stream id was minted for
   await ensureOffscreen();
   // Which document this recording is about to live in. ensureOffscreen has
   // just had a `pong` out of it, so a rejection here means it went away in

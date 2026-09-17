@@ -23,6 +23,10 @@
     "capture-region": {
       "suggested_key": { "default": "Alt+Shift+R" },
       "description": "Capture a region"
+    },
+    "toggle-recording": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "Start or stop recording"
     }
   }
 }

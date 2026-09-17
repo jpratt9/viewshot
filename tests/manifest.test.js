@@ -35,3 +35,8 @@ test('manifest.json and package.json agree on the version', () => {
 test('the version is a plain dotted number Chrome will accept', () => {
   assert.match(manifest.version, /^\d+(\.\d+){0,3}$/);
 });
+
+test('recording toggle has a shortcut within Chrome’s four-key limit', () => {
+  assert.strictEqual(manifest.commands['toggle-recording'].suggested_key.default, 'Alt+Shift+S');
+  assert.ok(Object.values(manifest.commands).filter(c => c.suggested_key).length <= 4);
+});
