@@ -9,7 +9,7 @@ const CODE = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8'
 // background.js with a chrome.offscreen mock that tracks document lifetime.
 // The document is the thing under test: it shares a renderer main thread with
 // the action popup, so it must not outlive the work it was created for.
-function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
+function load({ hasDoc = false, rec = null, createRejects = false, docId = null } = {}) {
   const calls = { create: 0, close: 0, sent: [], badges: [] };
   const on = {}; // background.js's runtime.onStartup / onInstalled listeners
   let onMsg; // background.js's own runtime.onMessage listener (the first one)
@@ -21,6 +21,10 @@ function load({ hasDoc = false, rec = null, createRejects = false } = {}) {
       onInstalled: { addListener: (fn) => { on.onInstalled = fn; } },
       sendMessage: async (m) => {
         calls.sent.push(m);
+        // docId: which document is on the other end. null stands for one that
+        // never answers the question - it is only ever asked of a document a
+        // recording was written down against.
+        if (m.type === 'offscreen-id') return docId;
         return m.type === 'offscreen-ping' ? 'pong' : 'done';
       },
     },
@@ -224,6 +228,41 @@ test('rec-check re-checks a worker that is already awake', async () => {
   send({ type: 'rec-check' });
   await new Promise((r) => setImmediate(r));
   assert.strictEqual(key(), null, 'opening a popup left the leftover key alone');
+});
+
+// --- and the document that answered may not be the one it lived in -----------
+// Clipboard copies share this single document, so a copy that opened one after
+// the recording's own had died used to answer for it: the key survived every
+// read, the badge stayed on REC, Stop stayed enabled - and closeOffscreen
+// returned early, leaving the copy's document open too.
+
+const REC_A = { format: 'webm', filename: 'x', docId: 'A' };
+
+test("a document opened for a clipboard copy doesn't vouch for a recording that died with its own", async () => {
+  const { ctx, calls, key } = load({ rec: REC_A, hasDoc: true, docId: 'B' });
+  assert.strictEqual(await ctx.getRec(), undefined, 'a document that never held the recording answered for it');
+  assert.strictEqual(key(), null);
+  assert.deepStrictEqual(calls.badges, [''], 'REC was left over a recording that had ended');
+});
+
+test("a recording's own document still vouches for it", async () => {
+  const { ctx, key } = load({ rec: REC_A, hasDoc: true, docId: 'A' });
+  assert.ok(await ctx.getRec(), 'the recording was forgotten by the document holding it');
+  assert.ok(key());
+});
+
+test("a document that can't say which one it is leaves the recording alone", async () => {
+  const { ctx, key } = load({ rec: REC_A, hasDoc: true });
+  ctx.chrome.runtime.sendMessage = async () => { throw new Error('Could not establish connection.'); };
+  assert.ok(await ctx.getRec(), 'not being able to tell threw the recording away');
+  assert.ok(key());
+});
+
+test("a copy's document is closed once the recording it isn't holding is forgotten", async () => {
+  const { ctx, calls, docLives } = load({ rec: REC_A, hasDoc: true, docId: 'B' });
+  await ctx.copyImage(PNG);
+  assert.strictEqual(calls.close, 1, 'the copy left its document open on a recording that was not there');
+  assert.strictEqual(docLives(), false);
 });
 
 test('closeOffscreen is a no-op when no document exists', async () => {

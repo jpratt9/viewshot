@@ -507,6 +507,7 @@ function loadOffscreen() {
       runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, sendMessage: async (m) => { sent.push(m); }, getURL: (p) => p },
     },
     navigator: { mediaDevices: { getUserMedia: async () => stream } },
+    crypto: { randomUUID: () => 'doc-1' }, // the id this document answers with
     MediaRecorder: FakeRecorder,
     Blob: class { constructor(parts, { type } = {}) { this.parts = parts; this.size = parts.length; this.type = type; } },
     URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
@@ -704,12 +705,14 @@ test('a recording uses the tab it was sent for, even when the worker finds no ac
   keepStore(chrome); // the start reads `rec` back before it starts the recorder
   const set = chrome.storage.local.set;
   chrome.storage.local.set = async (o) => { stored.push({ ...o.rec }); return set(o); };
-  chrome.runtime.sendMessage = async (m) => { sent.push({ ...m }); };
+  chrome.runtime.sendMessage = async (m) => { sent.push({ ...m }); return m.type === 'offscreen-id' ? 'doc-1' : undefined; };
   Object.assign(bg.ctx.window, { innerWidth: 1280, innerHeight: 713, devicePixelRatio: 1 });
   bg.message({ type: 'rec-start', streamId: 'sid', opts: { ...OPTS, format: 'webm' }, tabId: TAB.id });
   await settle();
   assert.deepStrictEqual(targets, [TAB.id, TAB.id], 'the blip and the viewport read were skipped');
-  assert.deepStrictEqual(stored, [{ url: TAB.url, title: TAB.title, format: 'webm', filename: 'x' }], 'no {domain} or {title} to name the file with');
+  // docId: which offscreen document this recording lives in, so a later one -
+  // opened for a clipboard copy after this one died - can't vouch for it.
+  assert.deepStrictEqual(stored, [{ url: TAB.url, title: TAB.title, format: 'webm', filename: 'x', docId: 'doc-1' }], 'no {domain} or {title} to name the file with, or no document to check it against');
   const start = sent.find((m) => m.type === 'rec-start-offscreen');
   assert.deepStrictEqual([start.width, start.height], [1280, 713], 'the recording was not sized to the tab');
 });
@@ -996,6 +999,28 @@ test('a start the offscreen document never gets is undone', async () => {
   assert.strictEqual(reply, false, 'the popup was told the recording started');
 });
 
+// The id is only there to tell one document from another later on. A start
+// that can't read it goes ahead without one, and that recording is checked the
+// way every one was before: on whether any document exists.
+test("a start whose document won't say which one it is is still recorded", async () => {
+  const bg = loadBg();
+  const { chrome } = bg.ctx;
+  const sent = [];
+  let reply;
+  chrome.offscreen = { hasDocument: async () => true }; // already open
+  const store = keepStore(chrome);
+  chrome.runtime.sendMessage = async (m) => {
+    sent.push(m.type);
+    if (m.type === 'offscreen-id') throw new Error(UNREACHABLE);
+  };
+  bg.message(WEBM_START, (r) => { reply = r; });
+  await settle();
+  assert.strictEqual(store.rec?.docId, null, 'a document that never answered was written down as one');
+  assert.ok(sent.includes('rec-start-offscreen'), 'the recording was dropped over an id it does not need');
+  assert.deepStrictEqual(bg.badges, ['REC']);
+  assert.strictEqual(reply, true, 'the popup was told the start failed');
+});
+
 test('a start that fails in the offscreen document is still undone', async () => {
   const bg = loadBg();
   const removed = [];
@@ -1090,7 +1115,7 @@ test('a second start that fails leaves the first recording its rec', async () =>
   closeSecondTab?.();
   await settle();
   assert.strictEqual(store.rec?.url, TAB.url, 'the second start removed the first recording\'s rec');
-  assert.deepStrictEqual(sent, ['rec-start-offscreen'], 'the offscreen document was told to start twice');
+  assert.deepStrictEqual(sent, ['offscreen-id', 'rec-start-offscreen'], 'the offscreen document was told to start twice');
   assert.deepStrictEqual(bg.badges, ['REC'], 'REC was flashed away over a running recording');
   assert.deepStrictEqual(replies, [true, true]);
 });
@@ -1197,6 +1222,25 @@ test('a start stopped while it waits on the page records nothing, and the next s
 // The worker now asks the document before it closes it.
 
 const busy = (o) => { let answer; o.message({ type: 'offscreen-busy' }, (a) => { answer = a; }); return answer; };
+
+// --- which document is answering ---------------------------------------------
+// offscreen-busy answers for whatever is in the document, which is nothing for
+// the first seconds of a start. This answers for the document itself, so the
+// worker can tell a recording's own document from one opened later for a
+// clipboard copy - and it has to hold still for as long as the document does.
+
+const docId = (o) => { let answer; o.message({ type: 'offscreen-id' }, (a) => { answer = a; }); return answer; };
+
+test('the document answers with the same id for as long as it lives', async () => {
+  const o = loadOffscreen();
+  assert.strictEqual(docId(o), 'doc-1', 'the document could not say which one it is');
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  assert.strictEqual(docId(o), 'doc-1', 'the id moved under the recording written down against it');
+  o.ctx.stopRecording('out.webm');
+  o.recorders[0].finish();
+  await settle();
+  assert.strictEqual(docId(o), 'doc-1', 'a saved recording took the document\'s name with it');
+});
 
 test('a GIF keeps its document busy from its stop until the download is done with the file', async () => {
   const o = loadOffscreen();

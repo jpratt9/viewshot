@@ -58,11 +58,19 @@ chrome.runtime.onInstalled.addListener(() => chrome.storage.local.remove('rec'))
 // document open.
 async function getRec() {
   const { rec } = await chrome.storage.local.get('rec');
-  // Only asked when there is a key to check, and a hasDocument() that can't
-  // answer leaves the key alone: it is evidence only when it says there is no
-  // document.
-  if (!rec || await chrome.offscreen.hasDocument().catch(() => true)) return rec;
-  console.warn('[ViewShot] a recording was marked as running with no offscreen document; forgetting it');
+  // Only asked when there is a key to check, and an answer that can't be had
+  // leaves the key alone: it is evidence only when it says the document the
+  // recording lives in is gone.
+  if (!rec) return rec;
+  if (await chrome.offscreen.hasDocument().catch(() => true)) {
+    // Clipboard copies share this one document (ensureOffscreen), so "a
+    // document exists" used to be answered by one opened for a copy after the
+    // recording's own had died - and the key then survived every read.
+    if (!rec.docId) return rec; // written down before it had one to compare
+    const id = await chrome.runtime.sendMessage({ type: 'offscreen-id' }).catch(() => null);
+    if (id == null || id === rec.docId) return rec; // no answer is not an answer
+  }
+  console.warn('[ViewShot] a recording was marked as running in an offscreen document that is gone; forgetting it');
   await chrome.storage.local.remove('rec');
   await chrome.action.setBadgeText({ text: '' }); // REC over nothing
 }
@@ -557,9 +565,14 @@ async function startRecording(streamId, opts, tabId) {
   // it to the offscreen recorder, which is the only context with media APIs.
   const tab = await getActiveTab(tabId); // the tab the popup minted the stream id for
   await ensureOffscreen();
+  // Which document this recording is about to live in. ensureOffscreen has
+  // just had a `pong` out of it, so a rejection here means it went away in
+  // between; the recording is then written down without one and falls back to
+  // the plain "is there a document" check.
+  const docId = await chrome.runtime.sendMessage({ type: 'offscreen-id' }).catch(() => null);
   log('offscreen ready, sending rec-start-offscreen, format=', opts.format);
   // Persist enough to name the file at stop time, surviving a worker restart.
-  await chrome.storage.local.set({ rec: { url: tab?.url, title: tab?.title, format: opts.format, filename: opts.filename } });
+  await chrome.storage.local.set({ rec: { url: tab?.url, title: tab?.title, format: opts.format, filename: opts.filename, docId } });
   await chrome.action.setBadgeBackgroundColor({ color: '#e5534b' });
   await chrome.action.setBadgeText({ text: 'REC' });
   // Play the edge-glow blip BEFORE starting the recorder so its animation

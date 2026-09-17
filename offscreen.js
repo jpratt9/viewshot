@@ -3,8 +3,18 @@
 const log = (...a) => console.log('[ViewShot/offscreen]', ...a);
 log('offscreen loaded, GIF available =', typeof GIF !== 'undefined');
 
+// This document's own name, minted when it loads and fixed for its lifetime.
+// A recording is written down with the id of the document it started in, so
+// the one Chrome opens later for a clipboard copy can be told apart from the
+// one the recording lives in. Only ever compared, never parsed.
+const docId = crypto.randomUUID();
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === 'offscreen-ping') { sendResponse('pong'); return; }
+  // Asked while a recording is marked as running. offscreen-busy answers for
+  // whatever is in this document, which is nothing for the first seconds of a
+  // start; this answers for the document itself, which is true from load.
+  if (msg?.type === 'offscreen-id') { sendResponse(docId); return; }
   // Asked before the worker closes this document: a recording that is running,
   // or stopped but not saved yet, lives only in here.
   if (msg?.type === 'offscreen-busy') { sendResponse(!!rec || saving > 0); return; }
