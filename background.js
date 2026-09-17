@@ -229,6 +229,9 @@ async function captureFullPage(tab) {
       // Stop rather than stack the same viewport down the canvas.
       if (i > 0 && actual <= landed) break;
       landed = actual;
+      // Which sticky elements this first screen shows, while the page is still
+      // at the top: the ones further down have to be left alone below.
+      if (i === 0 && positions.length > 1) await markStickyOnFirstScreen(tab);
       // Keep fixed/sticky elements (pinned headers, banners) on the FIRST slice
       // only; hide them on later slices so they aren't stitched in repeatedly.
       if (i === 1 && !hid) { await setFixedHidden(tab, true); hid = true; }
@@ -260,20 +263,48 @@ async function captureFullPage(tab) {
 
 // Temporarily hide position:fixed / position:sticky elements (the cause of
 // repeated headers/banners in scroll-stitch), then restore them afterward.
+// A sticky element is only worth hiding if it is one of the pinned ones the
+// first slice already shows. The rest - sticky table headers, section headings,
+// sidebars further down - never appear in that slice, so hiding them blanked
+// them out of every slice that should have shown them. Run at the top of the
+// page, where a sticky element is still where the document puts it.
+async function markStickyOnFirstScreen(tab) {
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => {
+      const list = [];
+      for (const el of document.querySelectorAll('*')) {
+        if (getComputedStyle(el).position !== 'sticky') continue;
+        const r = el.getBoundingClientRect();
+        if (r.bottom > 0 && r.top < window.innerHeight) list.push(el);
+      }
+      window.__shotSticky = list;
+    },
+  });
+}
+
 async function setFixedHidden(tab, hide) {
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: (doHide) => {
       if (doHide) {
+        // Only the sticky elements the first screen showed: window.__shotSticky
+        // is what markStickyOnFirstScreen left behind. `fixed` is unconditional
+        // - it is pinned to the viewport wherever the page is, so every later
+        // slice would stitch it in again.
+        const sticky = window.__shotSticky || [];
         const list = [];
         for (const el of document.querySelectorAll('*')) {
           const pos = getComputedStyle(el).position;
-          if (pos === 'fixed' || pos === 'sticky') { list.push([el, el.style.visibility]); el.style.visibility = 'hidden'; }
+          if (pos !== 'fixed' && pos !== 'sticky') continue;
+          if (pos === 'sticky' && !sticky.includes(el)) continue;
+          list.push([el, el.style.visibility]); el.style.visibility = 'hidden';
         }
         window.__shotHidden = list;
       } else if (window.__shotHidden) {
         for (const [el, v] of window.__shotHidden) el.style.visibility = v;
         window.__shotHidden = null;
+        window.__shotSticky = null;
       }
     },
     args: [hide],
