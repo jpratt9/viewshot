@@ -1284,3 +1284,41 @@ test('a start whose getUserMedia fails, with no Stop, still reports it', async (
   assert.deepStrictEqual(o.sent.map((m) => m.type), ['rec-failed'], 'the failed start was never reported');
   assert.strictEqual(errors[0]?.[1], refused, 'the error logged is not the one getUserMedia failed with');
 });
+
+// --- a blip the page runs after its deadline --------------------------------
+// A start stops waiting for the edge-glow blip at its deadline and goes on to
+// the recorder. A page that only ran the blip script after that still showed
+// the glow, and it could end up in the recording.
+
+test('a blip the page runs after its deadline shows no glow', async () => {
+  const bg = loadBg();
+  const { chrome, document } = bg.ctx;
+  const glows = [];
+  document.createElement = () => ({ style: {}, animate: () => ({}) });
+  document.documentElement.appendChild = (el) => glows.push(el);
+  const run = chrome.scripting.executeScript;
+  let runScript;
+  chrome.scripting.executeScript = (o) => new Promise((res) => { runScript = () => res(run(o)); }); // the page is busy until runScript()
+  const blip = bg.ctx.blipRecordingIndicator(TAB.id);
+  bg.tick(vm.runInContext('SCRIPT_TIMEOUT_MS', bg.ctx) + 1000);
+  bg.expire(); // the deadline passed a second ago
+  await blip; // the start has gone on without the glow
+  runScript(); // only now does the page get to the script
+  assert.deepStrictEqual(glows, [], 'the glow showed after the start had gone on without it');
+});
+
+test('a blip the page runs before its deadline still shows its glow', async () => {
+  const bg = loadBg();
+  const { chrome, document } = bg.ctx;
+  const glows = [];
+  document.createElement = () => ({ style: {}, animate: () => ({}) });
+  document.documentElement.appendChild = (el) => glows.push(el);
+  const run = chrome.scripting.executeScript;
+  let runScript;
+  chrome.scripting.executeScript = (o) => new Promise((res) => { runScript = () => res(run(o)); }); // the page is busy until runScript()
+  const blip = bg.ctx.blipRecordingIndicator(TAB.id);
+  bg.tick(vm.runInContext('SCRIPT_TIMEOUT_MS', bg.ctx) - 1000);
+  runScript(); // the page gets to the script a second before its deadline
+  await blip;
+  assert.strictEqual(glows.length, 1, 'the glow was skipped although the page ran the script in time');
+});

@@ -517,14 +517,17 @@ async function blipRecordingIndicator(tabId) {
   try {
     await scriptWithTimeout({
       target: { tabId },
-      func: (animMs) => {
+      func: (animMs, deadline) => {
+        // The start stops waiting for this script at its deadline and goes on to
+        // the recorder, so a glow shown after that would end up in the recording.
+        if (Date.now() > deadline) return;
         const o = document.createElement('div');
         o.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;box-shadow:inset 0 0 44px 10px rgba(57,211,83,.6);opacity:0;';
         (document.body || document.documentElement).appendChild(o);
         o.animate([{ opacity: 0 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], { duration: animMs, easing: 'ease-out' })
           .onfinish = () => o.remove();
       },
-      args: [BLIP_ANIM_MS],
+      args: [BLIP_ANIM_MS, Date.now() + SCRIPT_TIMEOUT_MS],
     });
   } catch (e) {
     // chrome:// URLs and similar refuse executeScript — skip the wait so we
