@@ -104,7 +104,7 @@ Two files change: `background.js` and `tests/capture-errors.test.js`.
 
 ## Open questions
 
-- **HiDPI.** On a display at `devicePixelRatio` 2, `Tab.width/height` is half the physical size the script path reports, so a chrome:// recording would come out 1280×713 where an http one in the same window comes out 2560×1426 — right framing, half the linear resolution. The ticket asks only that the recording be sized to the tab, and every measurement in it and in the repo was taken at dpr 1, so this plan takes the 1x recording. If that isn't good enough, the dpr has to come from somewhere else, and each source is a bigger change: the popup could send its own `devicePixelRatio` with `rec-start` (it matches the page's — measured below), but the `Alt+Shift+S` shortcut has no popup; or the worker could remember the dpr from the last `getViewport` that did answer (`result.width / tab.width`) and keep it in `chrome.storage.local`, which is a new piece of state and is empty until a scriptable page has been recorded.
+- **HiDPI.** On a display at `devicePixelRatio` 2, `Tab.width/height` is half the physical size the script path reports, so a chrome:// recording would come out 1280×713 where an http one in the same window comes out 2560×1426 — right framing, half the linear resolution. The ticket asks only that the recording be sized to the tab, and every measurement in it and in the repo was taken at dpr 1, so this plan takes the 1x recording (settled below, and filed as KAN-442). If that isn't good enough, the dpr has to come from somewhere else, and each source is a bigger change: the popup could send its own `devicePixelRatio` with `rec-start` (it matches the page's — measured below), but the `Alt+Shift+S` shortcut has no popup; or the worker could remember the dpr from the last `getViewport` that did answer (`result.width / tab.width`) and keep it in `chrome.storage.local`, which is a new piece of state and is empty until a scriptable page has been recorded.
 - **Nothing else in the ticket is left open.** GIF needs no separate handling: it is scaled from the same stream (`offscreen.js`), so pinning the capture fixes both formats.
 
 ## Checked while planning
@@ -147,4 +147,13 @@ Done as planned, with one departure from step 2 and one addition to step 3.
   - **The fallback is what did it.** Asked directly in the worker after the run, `getViewport(tab)` returns `{width: 1280, height: 713}` for `chrome://version/`, the Web Store and `file://` — the pages where the script throws — and the same for http, where the script answers.
 - **Nothing else changed.** `git status --short` lists only `background.js`, `tests/capture-errors.test.js` and this plan.
 
-The open question above stands unchanged: every run here was at `devicePixelRatio` 1, where the fallback and the script path give the same numbers. A HiDPI display is where they differ.
+## The open question, settled
+
+**The 1x fallback is the answer for this ticket. The dpr is KAN-442's.**
+
+- **What the ticket asks for is done.** KAN-242 is about a recording that isn't sized to the tab — an 800×600 WebM and a 720×540 GIF with black bars for a 1280×713 tab. Every page it names now records at the tab's size with no bars, the same as an http page. Nothing in the ticket or its comment mentions resolution or HiDPI.
+- **Neither way of getting the dpr fits inside this change.** The popup's `devicePixelRatio` matches the page's, but `Alt+Shift+S` has no popup, so the shortcut path would still be 1x — the same bug in half the entry points. Remembering the dpr from the last `getViewport` that answered means a new key in `chrome.storage.local` that is empty until a scriptable page has been recorded, so the first recording after an install or a worker restart would still be 1x. Both are their own piece of work with their own failure to verify, and the repo's habit is one ticket per behaviour.
+- **1x is not a regression.** The fallback only runs where the old code sent no dims at all. On those pages this change goes from a letterboxed 800×600 to a correctly framed 1280×713; on a HiDPI display it would go from letterboxed 800×600 to a correctly framed 1x. No page records worse than it did before.
+
+Filed as **KAN-442**, linked as blocked by KAN-242, with the dpr-2 measurements and both fix directions in it.
+
