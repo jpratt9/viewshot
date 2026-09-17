@@ -80,6 +80,12 @@ async function startRecording(streamId, format, width, height) {
     video.muted = true;
     await new Promise((res) => { video.onloadedmetadata = res; });
     await video.play();
+    // A Stop can land in those two waits as well. `rec` is set by now, so
+    // stopRecording marks this start stopped and leaves the cleanup here:
+    // nothing has been captured, and the worker has already removed `rec` and
+    // cleared the badge, so a frame timer started now would tick on with
+    // nothing that can stop it.
+    if (start.stopped) { teardown(); console.warn('[ViewShot] stopped before the recorder started; not starting it'); return; }
 
     const scale = Math.min(1, GIF_MAX_WIDTH / video.videoWidth);
     const w = Math.round(video.videoWidth * scale);
@@ -142,6 +148,11 @@ function stopRecording(filename) {
   // No recording yet, but its start may still be waiting on getUserMedia.
   if (!rec) { if (lastStart) lastStart.stopped = true; return; }
   const { stream, format } = rec;
+  // A GIF start sets `rec` before it waits for its video, so the encoder may
+  // not be there yet: rec.gif.on threw, and the start recorded on. Nothing has
+  // been captured, so hand this Stop to the start the same way, and leave
+  // `saving` alone: no file is on its way.
+  if (format === 'gif' && !rec.gif) { if (lastStart) lastStart.stopped = true; return; }
   // Saved only later: a GIF is encoded first, a video waits for its final
   // flush, and download() still needs the file's URL for a minute after that.
   saving++;

@@ -479,6 +479,7 @@ test('still records on the Web Store, and on a file:// page without file access'
 function loadOffscreen() {
   const recorders = [];
   const downloads = [];
+  const videos = []; // the <video> a GIF start waits on
   class FakeRecorder {
     constructor(stream, { mimeType } = {}) { this.mimeType = mimeType; this.state = 'recording'; recorders.push(this); }
     start() {}
@@ -505,7 +506,14 @@ function loadOffscreen() {
     Blob: class { constructor(parts, { type } = {}) { this.parts = parts; this.size = parts.length; this.type = type; } },
     URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
     document: {
-      createElement: () => ({ style: {}, click() {}, remove() {}, appendChild() {} }),
+      createElement: (tag) => {
+        const el = { style: {}, click() {}, remove() {}, appendChild() {} };
+        // A GIF start waits for this video's metadata and play() before it
+        // has an encoder; the test releases both.
+        if (tag === 'video') { Object.assign(el, { play: async () => {}, videoWidth: 100, videoHeight: 100 }); videos.push(el); }
+        if (tag === 'canvas') el.getContext = () => ({ drawImage() {} }); // gif.js draws each frame through it
+        return el;
+      },
       body: { appendChild() {} },
     },
     setTimeout: (fn) => { timers.push(fn); return 0; }, clearInterval: () => {}, setInterval: () => 0,
@@ -516,7 +524,7 @@ function loadOffscreen() {
   // download() writes through an <a>, so keep each Blob on its way through.
   vm.runInContext('download = ((real) => (blob, name) => { __downloads.push([blob, name]); real(blob, name); })(download);', Object.assign(context, { __downloads: downloads }));
   return {
-    ctx: context, recorders, downloads, sent, endTrack: () => trackListeners.ended(),
+    ctx: context, recorders, downloads, videos, sent, endTrack: () => trackListeners.ended(),
     message: (msg, respond = () => {}) => onMessage(msg, {}, respond),
     runTimers: () => timers.splice(0).forEach((fn) => fn()),
   };
@@ -1343,4 +1351,36 @@ test('a start waits for the blip\'s glow to finish before it starts the recorder
   assert.strictEqual(glows.length, 1, 'the blip showed no glow');
   assert.ok(startedAt !== undefined, 'the recording was never started');
   assert.ok(startedAt - glows[0] >= vm.runInContext('BLIP_ANIM_MS', bg.ctx), 'the recorder started while the glow was still showing');
+});
+
+// --- a Stop while a GIF start is waiting for its video ----------------------
+// A GIF start sets `rec` when getUserMedia answers, then waits for its video's
+// metadata and play(). A Stop in that window found `rec` set and threw at
+// rec.gif.on, leaving `rec` set, the stream running, `saving` stuck above zero
+// and the frame timer going.
+
+test('a GIF start stopped while it waits for its video records nothing, and the next start goes ahead', async () => {
+  const o = loadOffscreen();
+  const { mediaDevices } = o.ctx.navigator;
+  const getUserMedia = mediaDevices.getUserMedia; // the shared track, whose stop() is a no-op
+  let stoppedTracks = 0;
+  const track = { stop() { stoppedTracks++; }, addEventListener() {} };
+  mediaDevices.getUserMedia = async () => ({ getVideoTracks: () => [track], getTracks: () => [track] });
+  const start = o.ctx.startRecording('sid', 'gif', 100, 100);
+  await settle(); // getUserMedia answers, so the start has a `rec` and is waiting on the video
+  assert.doesNotThrow(() => o.ctx.stopRecording('out.gif'), 'the stop threw on a rec with no encoder');
+  o.videos[0].onloadedmetadata(); // the video the start is waiting on
+  await start;
+  assert.strictEqual(vm.runInContext('rec', o.ctx), null, 'the stopped start went on to record');
+  assert.strictEqual(stoppedTracks, 1, 'the stopped start left the tab being captured');
+  assert.strictEqual(busy(o), false, 'the document stayed busy after a start that saved nothing');
+  assert.deepStrictEqual(o.downloads, [], 'the stopped start saved a file');
+  mediaDevices.getUserMedia = getUserMedia;
+  await o.ctx.startRecording('sid2', 'webm', 100, 100);
+  assert.strictEqual(o.recorders.length, 1, 'the next start was refused');
+  o.recorders[0].flush({ size: 10 });
+  o.ctx.stopRecording('out2.webm');
+  o.recorders[0].finish();
+  await settle();
+  assert.deepStrictEqual(o.downloads.map(([, name]) => name), ['out2.webm'], 'the next recording was never saved');
 });
