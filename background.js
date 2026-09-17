@@ -219,7 +219,7 @@ async function captureFullPage(tab) {
     Array.from({ length: Math.ceil(m.total / m.vh) }, (_, i) => Math.min(i * m.vh, Math.max(0, m.total - m.vh)))
   )];
 
-  let hid = false, landed = 0;
+  let hid = false, landed = 0, prev = '', repeats = 0;
   // finally: a slice that throws part-way must still put the page back, not
   // leave it scrolled to where the stitch stopped with its headers hidden.
   try {
@@ -242,6 +242,18 @@ async function captureFullPage(tab) {
       // another tab: stop rather than stitch it in.
       const now = await chrome.tabs.get(tab.id);
       if (!now.active || now.windowId !== tab.windowId) throw new Error('Full page stopped: another tab is now showing');
+      // captureVisibleTab hands back the last frame the window presented. A
+      // window that isn't drawing - minimized, occluded - presents none, so
+      // every slice comes back as the frame before it. The offsets still
+      // advance and the tab is still the one showing, so neither guard above
+      // fires: the stitch drew that one screen at every offset and saved a tall
+      // image that is the first screen over and over, with nothing to say so.
+      // Twice over, not once: a flat stretch of page - a long gap, a plain
+      // background, and no scrollbar to move since it is hidden by default -
+      // really does shoot the same bytes at two offsets, and must still save.
+      repeats = url === prev ? repeats + 1 : 0;
+      if (repeats >= 2) throw new Error('Full page stopped: the window is not drawing (minimized?)');
+      prev = url;
       const bmp = await createImageBitmap(await (await fetch(url)).blob());
       ctx.drawImage(bmp, 0, Math.round(actual * m.dpr)); // where it really is, not where we asked
     }

@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const CODE = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+const PNG = 'data:image/png;base64,AAAA';
 
 // A scrollable element that clamps writes the way a real one does — clamping is
 // what makes the last slice overlap the previous, so the tests need it.
@@ -39,7 +40,7 @@ function smoothEl(scrollHeight, clientHeight) {
 
 // background.js in a sandbox wired to a fake page. chrome.*, the canvas, and
 // the capture are all mocked — nothing real is touched.
-function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, leaveAt = 0, leave = {} }) {
+function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, leaveAt = 0, leave = {}, frozen = false, sameAt = [] }) {
   const canvases = [];
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; this.draws = []; canvases.push(this); }
@@ -55,6 +56,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
   // can't catch the bug: the old code drew at the offsets it asked for, which
   // look right even though every slice was the same unmoved viewport.
   const captureAt = [];
+  let last = PNG;
   const scriptCalls = [];
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   const context = {
@@ -83,9 +85,14 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
       },
       tabs: {
         captureVisibleTab: async () => {
-          captureAt.push(Math.max(de ? de.scrollTop : 0, body ? body.scrollTop : 0));
+          const at = Math.max(de ? de.scrollTop : 0, body ? body.scrollTop : 0);
+          captureAt.push(at);
           if (captureAt.length === failAt) throw new Error('capture failed');
-          return 'data:image/png;base64,AAAA';
+          // A window that draws hands back a different frame at each offset; one
+          // that isn't drawing hands back the frame it last presented, forever.
+          // sameAt: the slices a flat stretch of page shoots identically.
+          if (frozen || sameAt.includes(captureAt.length)) return last;
+          return (last = PNG + at);
         },
         // From capture `leaveAt` on, the tab is no longer the one showing in
         // window 9: `leave` says whether it was switched away from or moved.
@@ -316,4 +323,46 @@ test('marks and hides once on a page that needs several slices', async () => {
   await ctx.captureFullPage(TAB);
   // the marking, the hiding, and the restore - one each, however many slices
   assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 3, 'the marking or the hiding ran more than once');
+});
+
+// --- a window that stops drawing -------------------------------------------
+// captureVisibleTab hands back the last frame the window presented. A window
+// that isn't drawing - minimized, occluded - presents none, so every slice came
+// back as the frame before it. The offsets still advanced and the tab was still
+// the one showing, so neither guard fired: the stitch drew that one screen at
+// every offset and saved a tall image that is the first screen over and over.
+
+test('stops rather than stitch the same frame down the canvas', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(3052, 767), frozen: true });
+  await assert.rejects(() => ctx.captureFullPage(TAB), /not drawing/);
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 1534], 'stitched the repeated frame down the canvas');
+});
+
+test('puts the page back when the window stops drawing', async () => {
+  const body = el(3052, 767);
+  body.scrollTop = 640;
+  const header = { style: { visibility: '' } };
+  const { ctx } = load({ de: el(767, 767), body, fixed: [header], frozen: true });
+  await assert.rejects(() => ctx.captureFullPage(TAB), /not drawing/);
+  assert.strictEqual(body.scrollTop, 640, 'left scrolled to where the stitch stopped');
+  assert.strictEqual(header.style.visibility, '', 'left the pinned header hidden');
+});
+
+test('still stitches every slice of a window that is drawing', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(3052, 767) });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 1534, 3068, 4570],
+    'a drawing window lost slices to the frame check');
+});
+
+test('saves a page whose flat stretch shoots the same slice twice', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(3052, 767), sameAt: [3] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 1534, 3068, 4570],
+    'a long gap or a plain background lost the whole capture');
+});
+
+test('stops once the same frame comes back twice over', async () => {
+  const { ctx } = load({ de: el(767, 767), body: el(3052, 767), sameAt: [3, 4] });
+  await assert.rejects(() => ctx.captureFullPage(TAB), /not drawing/);
 });
