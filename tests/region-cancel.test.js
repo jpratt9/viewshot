@@ -209,6 +209,7 @@ function loadPopup() {
 
 test('Region closes the popup so the page can be dragged on', async () => {
   const p = loadPopup();
+  await settle(); // wait until startup enables capture
   await p.click('region');
   assert.deepStrictEqual(p.sent.map((m) => m.mode), ['region'], 'the capture is still requested');
   assert.strictEqual(p.closed(), 1);
@@ -217,6 +218,7 @@ test('Region closes the popup so the page can be dragged on', async () => {
 test('the popup stays open for the modes that need no page interaction', async () => {
   for (const mode of ['visible', 'fullpage']) {
     const p = loadPopup();
+    await settle(); // wait until startup enables capture
     await p.click(mode);
     assert.strictEqual(p.closed(), 0, `${mode} must not dismiss the popup`);
   }

@@ -3,9 +3,8 @@ const $ = (id) => document.getElementById(id);
 const isRecFmt = (f) => f === 'webm' || f === 'mp4' || f === 'gif';
 let activeTab = null;
 let recChanged = false; // the storage listener at the bottom has seen `rec` change
-let optsSaved = false; // save() has stored the form since the popup opened
-let filenameEdited = false; // input can precede change while startup is pending
-let qualityEdited = false;
+const edited = new Set(); // input can precede change while startup is pending
+let ready = false;
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
 
@@ -15,7 +14,7 @@ const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden
 // (the New Tab page is one), other extensions' pages and data: URLs all refuse
 // executeScript, which Full page and Region need, but activeTab still lets
 // Chrome capture and record them, so Visible and Record go through.
-// activeTab is null until load() resolves; the worker's badge covers that gap.
+// Capture stays disabled until load() has reconciled settings and the tab.
 const CAPTURABLE = /^(https?|file|ftp|chrome|chrome-extension|data):/i;
 const CHROME_PAGE = /^chrome:/i;
 const EXTENSION_OR_DATA = /^(chrome-extension|data):/i;
@@ -26,14 +25,14 @@ const uncapturable = (tab) => !!(tab && tab.url && !CAPTURABLE.test(tab.url));
 const WEB_STORE = /^https?:\/\/([\w-]+\.)*(chromewebstore|chrome)\.google\.com([:/?#]|$)/i;
 
 function apply(o) {
-  $('format').value = o.format;
-  if (!qualityEdited) {
+  if (!edited.has('format')) $('format').value = o.format;
+  if (!edited.has('quality')) {
     $('quality').value = o.quality;
     $('qualityVal').textContent = Math.round(o.quality * 100) + '%';
   }
-  if (!filenameEdited) $('filename').value = o.filename;
-  $('toClipboard').checked = o.toClipboard;
-  $('hideScrollbar').checked = o.hideScrollbar;
+  if (!edited.has('filename')) $('filename').value = o.filename;
+  if (!edited.has('toClipboard')) $('toClipboard').checked = o.toClipboard;
+  if (!edited.has('hideScrollbar')) $('hideScrollbar').checked = o.hideScrollbar;
   toggleQuality();
   toggleRec();
 }
@@ -64,11 +63,10 @@ async function load() {
   // `rec` changed while this function waited: the storage listener has already
   // set Stop from that change, which can be newer than `stored.rec`.
   if (!recChanged) $('stopBtn').disabled = !stored.rec;
-  // If save() ran while this function waited, storage already holds what the
-  // form shows, and `stored.opts` is older: leave the form alone. Record still
-  // has to follow the Stop set above.
-  if (optsSaved) toggleRec();
-  else apply(migrate({ ...DEFAULTS, ...(stored.opts || {}) }));
+  apply(migrate({ ...DEFAULTS, ...(stored.opts || {}) }));
+  ready = true;
+  edited.clear();
+  toggleRec();
 }
 
 function read() {
@@ -81,8 +79,9 @@ function read() {
   };
 }
 
-const save = () => {
-  optsSaved = true;
+const save = async () => {
+  if (!ready) await startup;
+  if (!ready) return; // initialization failed; never save the fallback form
   const o = read();
   try { localStorage.setItem('opts', JSON.stringify(o)); } catch { /* mirror is best-effort */ }
   return chrome.storage.local.set({ opts: o });
@@ -99,13 +98,13 @@ function toggleRec() {
   const vis = document.querySelector('.mode[data-mode="visible"]');
   vis.querySelector('.lbl').textContent = rec ? 'Record' : 'Visible';
   vis.querySelector('.ico').textContent = rec ? '●' : '▢';
-  vis.disabled = rec && !$('stopBtn').disabled;
-  document.querySelectorAll('.mode[data-mode="fullpage"], .mode[data-mode="region"]').forEach((b) => { b.disabled = rec; });
+  vis.disabled = !ready || rec && !$('stopBtn').disabled;
+  document.querySelectorAll('.mode[data-mode="fullpage"], .mode[data-mode="region"]').forEach((b) => { b.disabled = !ready || rec; });
 }
 
 document.querySelectorAll('#modes .mode').forEach((btn) => {
   btn.addEventListener('click', async () => {
-    if (btn.disabled) return;
+    if (!ready || btn.disabled) return;
     if (uncapturable(activeTab)) {
       showError('Can’t capture this page. Open a normal http(s) page and try again.');
       return; // keep the popup open so the error is visible
@@ -183,14 +182,18 @@ chrome.storage.local.onChanged.addListener((changes) => {
   toggleRec();
 });
 
-$('format').addEventListener('change', () => { toggleQuality(); toggleRec(); save(); });
-$('quality').addEventListener('input', () => { qualityEdited = true; $('qualityVal').textContent = Math.round($('quality').value * 100) + '%'; });
-$('quality').addEventListener('change', save);
-$('filename').addEventListener('input', () => { filenameEdited = true; });
-$('filename').addEventListener('change', save);
-$('toClipboard').addEventListener('change', save);
-$('hideScrollbar').addEventListener('change', save);
+for (const id of ['format', 'quality', 'filename', 'toClipboard', 'hideScrollbar']) {
+  $(id).addEventListener('change', () => {
+    if (!ready) edited.add(id);
+    if (id === 'format') { toggleQuality(); toggleRec(); }
+    return save();
+  });
+}
+$('quality').addEventListener('input', () => { if (!ready) edited.add('quality'); $('qualityVal').textContent = Math.round($('quality').value * 100) + '%'; });
+$('filename').addEventListener('input', () => { if (!ready) edited.add('filename'); });
 $('shortcuts').addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }); });
 
 paintFromCache(); // synchronous: correct UI in the first frame
-load();           // then reconcile with chrome.storage + the active tab
+const startup = load().catch(() => {
+  showError('Couldn’t load settings. Close and reopen ViewShot to try again.');
+});

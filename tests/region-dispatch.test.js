@@ -88,6 +88,7 @@ function loadPopup(store = { opts: { format: 'jpg' } }) {
 
 test('Region keeps the popup open until the worker acknowledges the message', async () => {
   const p = loadPopup();
+  await settle(); // wait until startup enables capture
   p.click('region');
   await settle();
   await settle();
@@ -99,6 +100,7 @@ test('Region keeps the popup open until the worker acknowledges the message', as
 
 test('Region closes the popup only after the answer arrives', async () => {
   const p = loadPopup();
+  await settle(); // wait until startup enables capture
   const done = p.click('region');
   await settle();
   p.ack.res(true);
@@ -108,6 +110,7 @@ test('Region closes the popup only after the answer arrives', async () => {
 
 test('a refused message leaves the popup open and says so', async () => {
   const p = loadPopup();
+  await settle(); // wait until startup enables capture
   const done = p.click('region');
   await settle();
   p.ack.rej(new Error('Could not establish connection.'));

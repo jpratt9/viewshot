@@ -36,7 +36,7 @@ function makeEl() {
 
 // Boots popup.js WITHOUT letting its async load() settle, so assertions can see
 // exactly what the first painted frame contained.
-function bootPopup(store = {}, cache = null) {
+function bootPopup(store = {}, cache = null, pending = {}) {
   const els = {};
   const storageGets = [];
   const mirror = { value: cache === null ? null : JSON.stringify(cache) };
@@ -46,7 +46,7 @@ function bootPopup(store = {}, cache = null) {
     querySelectorAll: () => [],
   };
   const chrome = {
-    tabs: { query: async () => [{ id: 1, url: 'https://a.com', title: 'T' }], create: () => {} },
+    tabs: { query: async () => { await pending.tabs; return [{ id: 1, url: 'https://a.com', title: 'T' }]; }, create: () => {} },
     storage: {
       local: {
         // chrome.storage.local.get accepts a key or an array of keys.
@@ -55,6 +55,7 @@ function bootPopup(store = {}, cache = null) {
           storageGets.push(Array.isArray(k) ? [...k] : k); // copy out of the vm realm
           const out = {};
           for (const key of (Array.isArray(k) ? k : [k])) if (key in store) out[key] = store[key];
+          await pending.storage;
           return out;
         },
         set: async (o) => Object.assign(store, o),
@@ -277,3 +278,67 @@ for (const edits of [
     assert.deepStrictEqual(JSON.parse(popup.mirror.value), expected);
   });
 }
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+for (const delayed of ['tabs', 'storage']) {
+  for (const cache of [null, { format: 'gif', quality: 0.8, filename: 'stale', toClipboard: false, hideScrollbar: true }]) {
+    for (const [id, value] of Object.entries({ format: 'webp', quality: '0.92', filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true })) {
+      test(`startup preserves untouched settings: ${delayed}, cache=${!!cache}, edit=${id}`, async () => {
+        const stored = { format: 'png', quality: 0.5, filename: '{title}-custom', toClipboard: true, hideScrollbar: false };
+        const gate = deferred();
+        const popup = bootPopup({ opts: { ...stored } }, cache, { [delayed]: gate.promise });
+        const mirrorBefore = popup.mirror.value;
+        popup.els[id][typeof value === 'boolean' ? 'checked' : 'value'] = value;
+        const saving = popup.els[id].listeners.change[0]();
+        await popup.settle();
+        assert.deepStrictEqual(popup.store.opts, stored, 'startup must not overwrite saved options');
+        assert.strictEqual(popup.mirror.value, mirrorBefore);
+        gate.resolve();
+        await saving;
+        await popup.settle();
+        const expected = { ...stored, [id]: id === 'quality' ? Number(value) : value };
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(popup.store.opts)), expected);
+        assert.deepStrictEqual(JSON.parse(popup.mirror.value), expected);
+        for (const [key, v] of Object.entries(expected)) {
+          assert.strictEqual(String(popup.els[key][typeof v === 'boolean' ? 'checked' : 'value']), String(v));
+        }
+      });
+    }
+  }
+}
+
+test('multiple early edits and a later edit keep the newest values', async () => {
+  const gate = deferred();
+  const popup = bootPopup({ opts: { format: 'png', quality: 0.5, filename: 'stored', toClipboard: true, hideScrollbar: false } }, null, { tabs: gate.promise });
+  popup.els.format.value = 'webp';
+  const first = popup.els.format.listeners.change[0]();
+  popup.els.filename.value = 'early';
+  const second = popup.els.filename.listeners.change[0]();
+  gate.resolve();
+  await Promise.all([first, second]);
+  await popup.settle();
+  popup.els.filename.value = 'latest';
+  await popup.els.filename.listeners.change[0]();
+  assert.strictEqual(popup.store.opts.filename, 'latest');
+  assert.strictEqual(popup.store.opts.format, 'webp');
+  assert.strictEqual(popup.store.opts.quality, 0.5);
+  assert.strictEqual(JSON.parse(popup.mirror.value).filename, 'latest');
+});
+
+test('a failed storage read leaves saved options and the mirror unchanged', async () => {
+  const gate = deferred();
+  const stored = { format: 'png', quality: 0.5, filename: 'stored', toClipboard: true, hideScrollbar: false };
+  const popup = bootPopup({ opts: { ...stored } }, null, { storage: gate.promise });
+  popup.els.format.value = 'webp';
+  const saving = popup.els.format.listeners.change[0]();
+  gate.reject(new Error('storage unavailable'));
+  await saving;
+  assert.deepStrictEqual(popup.store.opts, stored);
+  assert.strictEqual(popup.mirror.value, null);
+  assert.strictEqual(popup.els.err.hidden, false);
+});

@@ -233,9 +233,11 @@ test('recording a page that refuses scripts logs a warning, not an error', async
 
 // --- the popup says which page it was --------------------------------------
 
-function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {} } = {}) {
+function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, startupGate, startupFails = false } = {}) {
   const els = {};
   const sent = [];
+  const writes = [];
+  const streams = [];
   let onStored; // popup.js's chrome.storage.local.onChanged listener
   const makeEl = () => {
     const el = {
@@ -261,18 +263,18 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {} }
       getElementById: (id) => (els[id] = els[id] || makeEl()),
       // toggleRec() asks for the Visible/Record button: hand back the one the test clicks.
       querySelector: (sel) => modes.find((b) => sel.includes(`"${b.dataset.mode}"`)) || makeEl(),
-      querySelectorAll: (sel) => (sel.includes('#modes') ? modes : []),
+      querySelectorAll: (sel) => sel.includes('#modes') ? modes : modes.filter(b => sel.includes(`"${b.dataset.mode}"`)),
     },
     chrome: {
-      tabs: { query: async () => [{ id: 1, url, title: 'T' }], create: () => {} },
+      tabs: { query: async () => { await startupGate; if (startupFails) throw new Error('startup failed'); return [{ id: 1, url, title: 'T' }]; }, create: () => {} },
       storage: {
         local: {
-          get: async () => store, set: async () => {}, // `opts` and `rec`
+          get: async () => store, set: async (o) => { writes.push(o); }, // `opts` and `rec`
           onChanged: { addListener: (fn) => { onStored = fn; } },
         },
       },
       runtime: { sendMessage: async (m) => { sent.push(m); return true; } },
-      tabCapture: { getMediaStreamId: async () => { if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
+      tabCapture: { getMediaStreamId: async () => { streams.push('requested'); if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
     },
     localStorage: { getItem: () => null, setItem: () => {} },
@@ -281,7 +283,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {} }
   vm.runInContext(read('popup.js'), context);
   const btn = (mode) => modes.find((b) => b.dataset.mode === mode);
   return {
-    els, sent, btn,
+    els, sent, btn, writes, streams,
     ready: settle, // let load() resolve so activeTab is populated
     click: (mode) => btn(mode).listeners.click[0](),
     stop: () => els.stopBtn.listeners.click[0](),
@@ -876,4 +878,49 @@ test('Record follows a running recording when a setting is saved while the popup
   await p.ready();
   assert.strictEqual(p.els.stopBtn.disabled, false, 'Stop was greyed out mid-recording');
   assert.strictEqual(p.btn('visible').disabled, true, 'Record was left enabled over a running recording');
+});
+
+for (const format of ['webp', 'webm']) {
+  test(`capture waits for reconciled settings: ${format}`, async () => {
+    let release;
+    const startupGate = new Promise(r => { release = r; });
+    const opts = { format: 'png', quality: 0.5, filename: 'custom', toClipboard: false, hideScrollbar: false };
+    const p = loadPopup('https://a.com', { store: { opts }, startupGate });
+    p.els.format.value = format;
+    const saving = p.els.format.listeners.change[0]();
+    for (const mode of ['visible', 'fullpage', 'region']) {
+      assert.strictEqual(p.btn(mode).disabled, true);
+      await p.click(mode);
+    }
+    assert.strictEqual(p.sent.length, 0);
+    assert.strictEqual(p.writes.length, 0);
+    assert.strictEqual(p.streams.length, 0);
+    release();
+    await saving;
+    await p.ready();
+    assert.strictEqual(p.btn('visible').disabled, false);
+    assert.strictEqual(p.btn('fullpage').disabled, format === 'webm');
+    assert.strictEqual(p.btn('region').disabled, format === 'webm');
+    const capture = p.click('visible');
+    if (format === 'webm') assert.strictEqual(p.streams.length, 1, 'stream request must precede any await');
+    await capture;
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(p.sent[0].opts)), { ...opts, format });
+  });
+}
+
+test('failed initialization reports an error and cannot save fallback options', async () => {
+  const p = loadPopup('https://a.com', { startupFails: true });
+  p.els.format.value = 'webm';
+  await p.els.format.listeners.change[0]();
+  await p.ready();
+  assert.strictEqual(p.els.err.hidden, false);
+  assert.match(p.els.err.textContent, /load settings/);
+  await p.els.format.listeners.change[0]();
+  for (const mode of ['visible', 'fullpage', 'region']) {
+    assert.strictEqual(p.btn(mode).disabled, true);
+    await p.click(mode);
+  }
+  assert.strictEqual(p.writes.length, 0);
+  assert.strictEqual(p.sent.length, 0);
+  assert.strictEqual(p.streams.length, 0);
 });
