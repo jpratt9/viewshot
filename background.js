@@ -465,33 +465,35 @@ async function captureRegion(tab) {
 // ---- offscreen document (shared by clipboard + recording; only one allowed) ----
 let offscreenCreating;
 async function ensureOffscreen() {
+  if (offscreenCreating) return offscreenCreating;
   const has = await chrome.offscreen.hasDocument();
   console.log('[ViewShot] ensureOffscreen hasDocument=', has);
+  if (offscreenCreating) return offscreenCreating;
   if (has) return;
-  if (!offscreenCreating) {
-    offscreenCreating = chrome.offscreen.createDocument({
+  offscreenCreating = (async () => {
+    // Forget a recording whose document died before its replacement exists:
+    // while the new listener loads, it cannot answer getRec's identity check.
+    await getRec();
+    await chrome.offscreen.createDocument({
       url: 'offscreen.html',
       reasons: ['CLIPBOARD', 'USER_MEDIA'],
       justification: 'Write screenshots to the clipboard and record the tab to video',
     });
-  }
-  // finally, not a bare assignment: a rejected createDocument would otherwise
-  // stay cached here and every later call would re-await the same rejection.
+    // Share cleanup, creation and readiness with every caller. A new recording
+    // must not start while another caller is still clearing the old one's key.
+    for (let i = 0; i < 40; i++) {
+      try {
+        if ((await chrome.runtime.sendMessage({ type: 'offscreen-ping' })) === 'pong') {
+          console.log('[ViewShot] offscreen document ready');
+          return;
+        }
+      } catch {}
+      await sleep(25);
+    }
+    throw new Error('The offscreen document never answered');
+  })();
+  // Only the owner resets the gate, including when initialization fails.
   try { await offscreenCreating; } finally { offscreenCreating = null; }
-  // createDocument can resolve just before the page's message listener is live,
-  // so the first rec-start would be dropped. Ping until it answers (the cause
-  // of the "press record twice to start" bug). One that never answers is a
-  // failure, not a document to carry on with.
-  for (let i = 0; i < 40; i++) {
-    try {
-      if ((await chrome.runtime.sendMessage({ type: 'offscreen-ping' })) === 'pong') {
-        console.log('[ViewShot] offscreen document ready');
-        return;
-      }
-    } catch {}
-    await sleep(25);
-  }
-  throw new Error('The offscreen document never answered');
 }
 
 // An offscreen document shares its renderer process — and therefore its Blink

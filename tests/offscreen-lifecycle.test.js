@@ -41,6 +41,7 @@ function load({ hasDoc = false, rec = null, createRejects = false, docId = null 
     storage: {
       local: {
         get: async (k) => (k === 'rec' && rec ? { rec } : {}),
+        set: async (value) => { if ('rec' in value) rec = value.rec; },
         remove: async (k) => { if (k === 'rec') rec = null; },
       },
     },
@@ -238,6 +239,44 @@ test('rec-check re-checks a worker that is already awake', async () => {
 
 const REC_A = { format: 'webm', filename: 'x', docId: 'A' };
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+for (const stale of [REC_A, { format: 'webm', filename: 'legacy' }]) {
+  test(`replacement loading clears the leftover recording (${stale.docId || 'legacy'})`, async () => {
+    const { ctx, calls, key, send, killDoc } = load({ rec: stale, hasDoc: true });
+    killDoc();
+    const ping = deferred();
+    const reachedPing = deferred();
+    const create = ctx.chrome.offscreen.createDocument;
+    let keyAtCreation;
+    ctx.chrome.offscreen.createDocument = async () => {
+      keyAtCreation = key();
+      return create();
+    };
+    ctx.chrome.runtime.sendMessage = async (m) => {
+      if (m.type === 'offscreen-ping') { reachedPing.resolve(); return ping.promise; }
+      throw new Error('Receiving end does not exist');
+    };
+    const initializing = ctx.ensureOffscreen();
+    await reachedPing.promise;
+    try {
+      assert.strictEqual(key(), null, 'stale state survived into the loading window');
+      assert.strictEqual(keyAtCreation, null, 'cleanup must precede creation');
+      assert.deepStrictEqual(calls.badges, ['']);
+      assert.ok(!(await ctx.getRec()));
+      await new Promise((resolve) => send({ type: 'rec-check' }, resolve));
+      assert.strictEqual(key(), null);
+    } finally {
+      ping.resolve('pong');
+      await initializing;
+    }
+  });
+}
+
 test("a document opened for a clipboard copy doesn't vouch for a recording that died with its own", async () => {
   const { ctx, calls, key } = load({ rec: REC_A, hasDoc: true, docId: 'B' });
   assert.strictEqual(await ctx.getRec(), undefined, 'a document that never held the recording answered for it');
@@ -286,3 +325,56 @@ test('reuses an existing document instead of creating a second one', async () =>
   await ctx.ensureOffscreen();
   assert.strictEqual(calls.create, 0, 'only one offscreen document is permitted per extension');
 });
+
+test('concurrent callers share cleanup and readiness without late removal of new state', async () => {
+  const { ctx, calls, key } = load({ rec: REC_A });
+  const cleanup = deferred();
+  const removing = deferred();
+  const ping = deferred();
+  const pinging = deferred();
+  const remove = ctx.chrome.storage.local.remove;
+  let removals = 0;
+  ctx.chrome.storage.local.remove = async (k) => {
+    removals++;
+    removing.resolve();
+    await cleanup.promise;
+    return remove(k);
+  };
+  ctx.chrome.runtime.sendMessage = async () => { pinging.resolve(); return ping.promise; };
+  let finished = 0;
+  const first = ctx.ensureOffscreen().then(() => { finished++; });
+  // Both callers enter before the first hasDocument lookup resolves.
+  const second = ctx.ensureOffscreen().then(() => { finished++; });
+  await removing.promise;
+  assert.strictEqual(calls.create, 0);
+  assert.strictEqual(finished, 0);
+  cleanup.resolve();
+  await pinging.promise;
+  const third = ctx.ensureOffscreen().then(() => { finished++; });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(calls.create, 1);
+  assert.strictEqual(finished, 0);
+  ping.resolve('pong');
+  await first;
+  const fresh = { docId: 'B', format: 'webm' };
+  await ctx.chrome.storage.local.set({ rec: fresh });
+  await Promise.all([second, third]);
+  assert.strictEqual(removals, 1);
+  assert.strictEqual(key(), fresh);
+  assert.strictEqual((await ctx.chrome.storage.local.get('rec')).rec, fresh);
+});
+
+for (const failure of ['creation', 'readiness']) {
+  test(`initialization retries successfully after ${failure} failure`, async () => {
+    const { ctx, calls, killDoc } = load();
+    const create = ctx.chrome.offscreen.createDocument;
+    if (failure === 'creation') ctx.chrome.offscreen.createDocument = async () => { throw new Error('create failed'); };
+    else ctx.chrome.runtime.sendMessage = async () => { throw new Error('not ready'); };
+    await assert.rejects(ctx.ensureOffscreen(), failure === 'creation' ? /create failed/ : /never answered/);
+    killDoc();
+    ctx.chrome.offscreen.createDocument = create;
+    ctx.chrome.runtime.sendMessage = async () => 'pong';
+    await ctx.ensureOffscreen();
+    assert.strictEqual(calls.create, failure === 'creation' ? 1 : 2);
+  });
+}
