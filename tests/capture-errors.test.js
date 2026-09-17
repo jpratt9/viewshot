@@ -1384,3 +1384,30 @@ test('a GIF start stopped while it waits for its video records nothing, and the 
   await settle();
   assert.deepStrictEqual(o.downloads.map(([, name]) => name), ['out2.webm'], 'the next recording was never saved');
 });
+
+// --- the GIF frame cap's MAX badge -----------------------------------------
+// A GIF that fills its 600 frames sends rec-cap-hit, and the worker stopped
+// the recording and flashed MAX whether or not there was one to stop. A Stop
+// that landed first has already saved the file and cleared the badge, so the
+// MAX reported a problem with a recording that was finished.
+
+test('the frame cap leaves the badge alone when a Stop got there first', async () => {
+  const bg = loadBg();
+  keepStore(bg.ctx.chrome); // no `rec`: the Stop removed it
+  bg.message({ type: 'rec-cap-hit' });
+  await settle();
+  assert.deepStrictEqual(bg.badges, [], 'the cap flashed a badge over a recording that had already ended');
+});
+
+test('the frame cap still flashes MAX when it ends a recording', async () => {
+  const bg = loadBg();
+  const store = keepStore(bg.ctx.chrome);
+  const sent = [];
+  bg.ctx.chrome.runtime.sendMessage = async (m) => { sent.push(m.type); };
+  store.rec = { url: TAB.url, title: TAB.title, format: 'gif', filename: 'x' };
+  bg.message({ type: 'rec-cap-hit' });
+  await settle();
+  assert.deepStrictEqual(bg.badges, ['MAX'], 'the cap did not report that it had ended the recording');
+  assert.deepStrictEqual(sent, ['rec-stop-offscreen'], 'the recording was never stopped');
+  assert.strictEqual(store.rec, undefined, 'the recording was left marked as running');
+});

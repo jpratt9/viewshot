@@ -20,7 +20,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
-  else if (msg?.type === 'rec-cap-hit') stopRecording().then(() => flashBadge('MAX')).catch((e) => console.error('[ViewShot]', e));
+  // MAX only when the cap is what ended the recording: a Stop that landed
+  // first has already saved the file and cleared the badge, and a MAX over
+  // that reports trouble with a recording that is finished.
+  else if (msg?.type === 'rec-cap-hit') stopRecording().then((stopped) => { if (stopped) return flashBadge('MAX'); }).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-failed') recFailed();
 });
 
@@ -544,12 +547,15 @@ async function blipRecordingIndicator(tabId) {
 async function stopRecording() {
   log('rec-stop received');
   const { rec } = await chrome.storage.local.get('rec');
-  if (!rec) { console.warn('[ViewShot] stop with no active recording'); return; }
+  // Answered, so the frame cap can tell whether it is the one that ended the
+  // recording: false means a Stop got here first.
+  if (!rec) { console.warn('[ViewShot] stop with no active recording'); return false; }
   const filename = buildName(rec.filename, rec.format, { url: rec.url, title: rec.title });
   log('stopping, will save as', filename);
   await chrome.storage.local.remove('rec');
   await chrome.action.setBadgeText({ text: '' });
   await chrome.runtime.sendMessage({ type: 'rec-stop-offscreen', filename });
+  return true;
 }
 
 // ---- helpers ----
