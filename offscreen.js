@@ -160,6 +160,11 @@ async function startRecording(streamId, format, width, height) {
     const mime = pickMime(format);
     log('starting MediaRecorder, mime=', mime);
     rec.recorder = new MediaRecorder(stream, { mimeType: mime });
+    const recorder = rec.recorder;
+    recorder.onerror = (event) => {
+      // A late error from a stopped recorder must not clear a newer recording.
+      if (rec?.recorder === recorder) onRecError(event.error || event);
+    };
     rec.recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     // Closing the captured tab ends the track, and the recorder stops by itself
     // - final flush, then `stop` - before rec-stop has been to the worker and

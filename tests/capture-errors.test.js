@@ -492,6 +492,7 @@ function loadOffscreen() {
     stop() { this.state = 'inactive'; }
     flush(blob) { this.ondataavailable({ data: blob }); }
     finish() { this.onstop?.(); } // `stop` fires whether or not anyone listens
+    fail(error) { this.state = 'inactive'; this.onerror?.({ error }); }
   }
   FakeRecorder.isTypeSupported = () => true;
 
@@ -535,6 +536,66 @@ function loadOffscreen() {
     runTimers: () => timers.splice(0).forEach((fn) => fn()),
   };
 }
+
+for (const format of ['webm', 'mp4']) {
+  test(`a ${format} recorder error clears the recording and allows another start`, async () => {
+    const o = loadOffscreen();
+    let trackStops = 0;
+    o.ctx.navigator.mediaDevices.getUserMedia = async () => ({
+      getVideoTracks: () => [],
+      getTracks: () => [{ stop: () => { trackStops++; } }],
+    });
+    const errors = [];
+    o.ctx.console.error = (...args) => errors.push(args);
+    await o.ctx.startRecording('sid', format, 100, 100);
+    const first = o.recorders[0];
+    first.flush({ size: 10 });
+    const error = new Error('encoder failed');
+    first.fail(error);
+    first.flush({ size: 5 });
+    first.finish();
+    await settle();
+    assert.deepStrictEqual(o.sent.map((m) => m.type), ['rec-failed']);
+    assert.strictEqual(errors[0]?.[1], error);
+    assert.strictEqual(trackStops, 1);
+    assert.strictEqual(busy(o), false);
+    assert.strictEqual(o.downloads.length, 0);
+
+    await o.ctx.startRecording('sid2', format, 100, 100);
+    assert.strictEqual(o.recorders.length, 2);
+    first.fail(error); // an old event must not tear down the replacement
+    assert.strictEqual(busy(o), true);
+    assert.strictEqual(trackStops, 1);
+    assert.strictEqual(o.sent.length, 1);
+  });
+}
+
+test('an error from a normally stopped recorder leaves its save and replacement alone', async () => {
+  const o = loadOffscreen();
+  const stops = [0, 0];
+  let nextStream = 0;
+  o.ctx.navigator.mediaDevices.getUserMedia = async () => {
+    const index = nextStream++;
+    return { getVideoTracks: () => [], getTracks: () => [{ stop: () => { stops[index]++; } }] };
+  };
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const first = o.recorders[0];
+  o.ctx.stopRecording('out.webm');
+  first.fail(new Error('late error'));
+  assert.deepStrictEqual(o.sent, []);
+  first.flush({ size: 5 });
+  first.finish();
+  await settle();
+  assert.strictEqual(o.downloads.length, 1);
+  o.runTimers();
+  assert.strictEqual(busy(o), false);
+  await o.ctx.startRecording('sid2', 'webm', 100, 100);
+  first.fail(new Error('another late error'));
+  assert.deepStrictEqual(o.sent, []);
+  assert.deepStrictEqual(stops, [1, 0]);
+  assert.strictEqual(busy(o), true);
+  assert.strictEqual(o.recorders[1].state, 'recording');
+});
 
 test('the final flush after stop() still lands in the recording', async () => {
   const o = loadOffscreen();
