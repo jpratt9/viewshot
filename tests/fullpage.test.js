@@ -59,11 +59,12 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
   let last = PNG;
   const scriptCalls = [];
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
+  let pageScriptTimeout; // CAPTURE_SCRIPT_TIMEOUT_MS, likewise
   const context = {
     console,
     URL, btoa, Date, clearTimeout,
     // Collapse the settle sleeps so tests stay fast. The capture deadline never passes.
-    setTimeout: (fn, ms) => { if (ms !== captureTimeout) fn(); },
+    setTimeout: (fn, ms) => { if (ms !== captureTimeout && ms !== pageScriptTimeout) fn(); },
     document: { documentElement: de, body, scrollingElement: de, querySelectorAll: () => fixed },
     // A window that is drawing runs the callback; from frozenAt on it never does.
     // The probe for slice k runs before capture k, so captureAt is one short.
@@ -111,6 +112,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
   vm.createContext(context);
   vm.runInContext(CODE, context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
+  pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
   return { ctx: context, canvases, scriptCalls, captureAt };
 }
 

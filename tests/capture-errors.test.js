@@ -18,13 +18,14 @@ const settle = () => new Promise((r) => setImmediate(r));
 
 // background.js against a fake browser. `clock` stands in for Date.now so the
 // rate-limit gate can be driven without real waiting; sleeps advance it.
-function loadBg({ captureFails = null, captureHangs = null, scriptFails = false, noActiveTab = false } = {}) {
+function loadBg({ captureFails = null, captureHangs = null, scriptFails = false, scriptHangs = false, noActiveTab = false } = {}) {
   const shots = [];
   const badges = [];
   const sleeps = [];
   const deadlines = [];
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   let scriptTimeout; // SCRIPT_TIMEOUT_MS, likewise
+  let pageScriptTimeout; // CAPTURE_SCRIPT_TIMEOUT_MS, likewise
   let now = 100000;
   let onMessage, onCommand;
 
@@ -56,6 +57,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
     scripting: {
       executeScript: async (o) => {
         if (scriptFails) throw new Error('Cannot access a chrome:// URL');
+        if (scriptHangs) return new Promise(() => {}); // main thread blocked: the page never runs it
         return [{ result: o.func ? o.func.apply(null, o.args || []) : undefined }];
       },
     },
@@ -74,7 +76,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
     // rather than actually waiting. The capture and page-script deadlines
     // aren't sleeps: they are held until the test calls expire().
     setTimeout: (fn, ms) => {
-      if (ms === captureTimeout || ms === scriptTimeout) { deadlines.push(fn); return; }
+      if (ms === captureTimeout || ms === scriptTimeout || ms === pageScriptTimeout) { deadlines.push(fn); return; }
       sleeps.push(ms || 0); now += ms || 0; fn();
     },
     // buildName still needs a real Date; only now() is under our control.
@@ -89,6 +91,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
   vm.runInContext(read('background.js'), context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   scriptTimeout = vm.runInContext('SCRIPT_TIMEOUT_MS', context);
+  pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
   return {
     ctx: context, shots, badges, sleeps,
     message: (msg, respond = () => {}) => onMessage(msg, {}, respond), // respond gets the listener's answer
@@ -1494,4 +1497,27 @@ test('a GIF start stopped while its video hangs reports nothing', async () => {
   await settle();
   assert.strictEqual(busy(o), false, 'the stopped start left the document marked as recording');
   assert.deepStrictEqual(o.sent, [], 'the stopped start flashed a failure over the user\'s own Stop');
+});
+
+// A page whose main thread never frees up accepts an injection and never runs
+// it. Every script a capture runs in the page was unfenced, so the call never
+// answered: runCapture stayed pending for good, its finally never put the page
+// back, and no badge ever said so.
+
+test('a full page shot of a page that never runs a script flashes the badge', async () => {
+  const bg = loadBg({ scriptHangs: true });
+  bg.message({ type: 'capture', mode: 'fullpage', opts: OPTS, tabId: TAB.id });
+  await settle();
+  for (let i = 0; i < 4; i++) { bg.expire(); await settle(); } // each injection's deadline in turn
+  assert.deepStrictEqual(bg.badges, ['!'], 'the capture hung instead of failing');
+  assert.strictEqual(bg.shots.length, 0, 'shot a page it never managed to measure');
+});
+
+test('a cosmetic script that never answers does not hold up the shot', async () => {
+  const bg = loadBg({ scriptHangs: true });
+  bg.message({ type: 'capture', mode: 'visible', opts: OPTS, tabId: TAB.id });
+  await settle();
+  for (let i = 0; i < 4; i++) { bg.expire(); await settle(); } // the cancel and the scrollbar hide
+  assert.strictEqual(bg.shots.length, 1, 'the scrollbar hide held the shot up for good');
+  assert.deepStrictEqual(bg.badges, [], 'flashed for a script whose failure is ignored');
 });

@@ -63,6 +63,13 @@ async function getActiveTab(tabId) {
 // out, and retried once if it still comes back over quota.
 const CAPTURE_MIN_GAP_MS = 550;
 const CAPTURE_TIMEOUT_MS = 5000;
+// The same, for the scripts a capture runs in the page. A page whose main
+// thread never frees up never runs them, and an executeScript that never
+// answers left runCapture pending for good: the page stayed scrolled with its
+// headers and scrollbar hidden and no badge ever flashed. Longer than
+// SCRIPT_TIMEOUT_MS, which a recording's 10s stream id sets; a capture has no
+// such clock, and a page busy for a few seconds should still get its shot.
+const CAPTURE_SCRIPT_TIMEOUT_MS = 5000;
 let captureGate = Promise.resolve();
 let lastCaptureAt = 0;
 
@@ -110,10 +117,10 @@ function captureWithTimeout(windowId) {
 // and the wait is paid once, on the slice the capture stops at.
 const FRAME_TIMEOUT_MS = 1000;
 const SCRIPT_TIMEOUT_MS = 2000;
-function scriptWithTimeout(injection) {
+function scriptWithTimeout(injection, ms = SCRIPT_TIMEOUT_MS) {
   return Promise.race([
     chrome.scripting.executeScript(injection),
-    sleep(SCRIPT_TIMEOUT_MS).then(() => { throw new Error(`executeScript did not answer within ${SCRIPT_TIMEOUT_MS / 1000}s`); }),
+    sleep(ms).then(() => { throw new Error(`executeScript did not answer within ${ms / 1000}s`); }),
   ]);
 }
 
@@ -213,9 +220,9 @@ function reportFrame(ms) {
 }
 
 async function pageIsDrawing(tab) {
-  const [{ result }] = await chrome.scripting.executeScript({
+  const [{ result }] = await scriptWithTimeout({
     target: { tabId: tab.id }, func: reportFrame, args: [FRAME_TIMEOUT_MS],
-  });
+  }, CAPTURE_SCRIPT_TIMEOUT_MS);
   return result === true;
 }
 
@@ -223,18 +230,18 @@ async function pageIsDrawing(tab) {
 // at the returned offset rather than the requested one, so a page that clamps,
 // animates, or ignores the scroll still produces a correctly aligned image.
 async function scrollPageTo(tab, y) {
-  const [{ result }] = await chrome.scripting.executeScript({
+  const [{ result }] = await scriptWithTimeout({
     target: { tabId: tab.id }, func: scrollAndReport, args: [y],
-  });
+  }, CAPTURE_SCRIPT_TIMEOUT_MS);
   return result || 0;
 }
 
 // ---- full page: scroll the viewport and stitch ----
 async function captureFullPage(tab) {
-  const [{ result: m }] = await chrome.scripting.executeScript({
+  const [{ result: m }] = await scriptWithTimeout({
     target: { tabId: tab.id },
     func: measurePage,
-  });
+  }, CAPTURE_SCRIPT_TIMEOUT_MS);
 
   const canvas = new OffscreenCanvas(Math.round(m.vw * m.dpr), Math.round(m.total * m.dpr));
   const ctx = canvas.getContext('2d');
@@ -301,7 +308,7 @@ async function captureFullPage(tab) {
 // them out of every slice that should have shown them. Run at the top of the
 // page, where a sticky element is still where the document puts it.
 async function markStickyOnFirstScreen(tab) {
-  await chrome.scripting.executeScript({
+  await scriptWithTimeout({
     target: { tabId: tab.id },
     func: () => {
       const list = [];
@@ -312,11 +319,11 @@ async function markStickyOnFirstScreen(tab) {
       }
       window.__shotSticky = list;
     },
-  });
+  }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 
 async function setFixedHidden(tab, hide) {
-  await chrome.scripting.executeScript({
+  await scriptWithTimeout({
     target: { tabId: tab.id },
     func: (doHide) => {
       if (doHide) {
@@ -340,7 +347,7 @@ async function setFixedHidden(tab, hide) {
       }
     },
     args: [hide],
-  });
+  }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 
 // Temporarily hide the page scrollbar(s) so they don't show up in the shot.
@@ -351,7 +358,7 @@ async function setScrollbarHidden(tab, hide) {
   // chrome:// URL this threw "Cannot access a chrome:// URL" before the shutter
   // was ever reached, and such pages show no page scrollbar to hide anyway.
   try {
-    await chrome.scripting.executeScript({
+    await scriptWithTimeout({
       target: { tabId: tab.id },
       func: (doHide) => {
         const ID = '__shotHideScrollbar';
@@ -368,7 +375,7 @@ async function setScrollbarHidden(tab, hide) {
         }
       },
       args: [hide],
-    });
+    }, CAPTURE_SCRIPT_TIMEOUT_MS);
   } catch { /* chrome:// and friends refuse injection */ }
 }
 
@@ -385,10 +392,10 @@ let cancelPendingRegion = null;
 async function cancelRegion(tab) {
   cancelPendingRegion?.(null);
   try {
-    await chrome.scripting.executeScript({
+    await scriptWithTimeout({
       target: { tabId: tab.id },
       func: () => { if (window.__shotRegionCancel) window.__shotRegionCancel(); },
-    });
+    }, CAPTURE_SCRIPT_TIMEOUT_MS);
   } catch { /* chrome:// and friends refuse injection, and hold no overlay */ }
 }
 
@@ -403,7 +410,7 @@ async function captureRegion(tab) {
     chrome.runtime.onMessage.addListener(onMsg);
     cancelPendingRegion = done;
   });
-  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['region.js'] });
+  await scriptWithTimeout({ target: { tabId: tab.id }, files: ['region.js'] }, CAPTURE_SCRIPT_TIMEOUT_MS);
   const rect = await resultP;
   if (!rect) return null;
 
