@@ -31,6 +31,7 @@ const GIF_MAX_WIDTH = 720;
 const GIF_MAX_FRAMES = 600; // ~60s cap so addFrame copies don't exhaust memory
 let rec = null; // { stream, format, recorder?, chunks?, gif?, timer?, frames? }
 let saving = 0; // recordings stopped but not saved yet (see stopRecording)
+let lastStart = null; // { stopped }, so a Stop can reach a start still waiting on getUserMedia
 
 async function startRecording(streamId, format, width, height) {
   // One recording at a time: replacing `rec` would leave the one already
@@ -48,8 +49,15 @@ async function startRecording(streamId, format, width, height) {
     Object.assign(mandatory, { minWidth: width, maxWidth: width, minHeight: height, maxHeight: height });
   }
   log('requesting getUserMedia for streamId', streamId, 'mandatory=', mandatory);
+  const start = { stopped: false };
+  lastStart = start;
   const stream = await navigator.mediaDevices.getUserMedia({ video: { mandatory } });
   log('got MediaStream, video tracks:', stream.getVideoTracks().length);
+  // The worker reads `rec` for the last time before it sends rec-start-offscreen,
+  // so its Stop can still arrive while getUserMedia is answering. The worker has
+  // removed `rec` and cleared the badge by then, and ignores any later rec-stop:
+  // a recorder started now would run on with nothing that can stop it.
+  if (start.stopped) { stream.getTracks().forEach((t) => t.stop()); console.warn('[ViewShot] stopped before the recorder started; not starting it'); return; }
   rec = { stream, format };
   // Chrome's own "Stop sharing" bar (and closing the captured tab) ends the
   // track without telling us. Route it through the normal stop path so the
@@ -123,7 +131,8 @@ async function startRecording(streamId, format, width, height) {
 }
 
 function stopRecording(filename) {
-  if (!rec) return;
+  // No recording yet, but its start may still be waiting on getUserMedia.
+  if (!rec) { if (lastStart) lastStart.stopped = true; return; }
   const { stream, format } = rec;
   // Saved only later: a GIF is encoded first, a video waits for its final
   // flush, and download() still needs the file's URL for a minute after that.

@@ -1213,3 +1213,42 @@ test('a WebM keeps its document busy from its stop until the download is done wi
   o.runTimers();
   assert.strictEqual(busy(o), false, 'the document stayed busy after its file was saved');
 });
+
+// --- a Stop while getUserMedia is still answering ---------------------------
+// The worker reads `rec` for the last time before it sends rec-start-offscreen,
+// so a Stop pressed after that could reach the offscreen document before its
+// start had a `rec`. The document ignored that Stop, and the recorder then
+// started with nothing that could stop it.
+
+test('a start stopped while it waits on getUserMedia records nothing, and the next start goes ahead', async () => {
+  const o = loadOffscreen();
+  const { mediaDevices } = o.ctx.navigator;
+  const getUserMedia = mediaDevices.getUserMedia; // answers at once
+  let answer;
+  let stoppedTracks = 0;
+  const track = { stop() { stoppedTracks++; }, addEventListener() {} };
+  mediaDevices.getUserMedia = () => new Promise((res) => { answer = () => res({ getVideoTracks: () => [track], getTracks: () => [track] }); });
+  const start = o.ctx.startRecording('sid', 'webm', 100, 100);
+  o.ctx.stopRecording('out.webm'); // the worker's rec-stop-offscreen
+  answer();
+  await start;
+  assert.strictEqual(o.recorders.length, 0, 'the stopped start went on to record');
+  assert.strictEqual(stoppedTracks, 1, 'the stopped start left the tab being captured');
+  mediaDevices.getUserMedia = getUserMedia;
+  await o.ctx.startRecording('sid2', 'webm', 100, 100);
+  assert.strictEqual(o.recorders.length, 1, 'the next start was refused');
+  o.recorders[0].flush({ size: 10 });
+  o.ctx.stopRecording('out2.webm');
+  o.recorders[0].finish();
+  await settle();
+  assert.deepStrictEqual(o.downloads.map(([, name]) => name), ['out2.webm'], 'the next recording was never saved');
+});
+
+// A document that never started a recording can still get a Stop: after the
+// extension is disabled and enabled again mid-recording, `rec` is left set
+// (KAN-297), and a clipboard copy leaves a new document open for it.
+test('a Stop that reaches a document that never started a recording does nothing', () => {
+  const o = loadOffscreen();
+  assert.doesNotThrow(() => o.ctx.stopRecording('out.webm'), 'a Stop with no start to mark threw'); // the worker's rec-stop-offscreen
+  assert.strictEqual(busy(o), false, 'the document was left busy with nothing to save');
+});
