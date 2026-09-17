@@ -242,3 +242,38 @@ test('a format changed while the popup is opening stays in the form', async () =
   assert.strictEqual(popup.els.qualityRow.style.display, 'flex', 'the quality row no longer matches the format');
   assert.strictEqual(popup.store.opts.format, 'jpg');
 });
+
+// Input can arrive before change (while typing or holding the slider).
+for (const edits of [
+  { filename: '{title}-typing' },
+  { filename: '' },
+  { quality: '0.71' },
+  { filename: 'both-edited', quality: '0.83' },
+]) {
+  test(`unfinished startup edits survive reconciliation: ${JSON.stringify(edits)}`, async () => {
+    const stored = { format: 'webp', quality: 0.5, filename: 'stored-name', toClipboard: true, hideScrollbar: false };
+    const popup = bootPopup({ opts: { ...stored } });
+    const cacheBefore = popup.mirror.value;
+    for (const [id, value] of Object.entries(edits)) {
+      popup.els[id].value = value;
+      for (const listener of popup.els[id].listeners.input || []) listener();
+    }
+    assert.deepStrictEqual(popup.store.opts, stored, 'input must not save unfinished edits');
+    assert.strictEqual(popup.mirror.value, cacheBefore);
+    await popup.settle();
+    assert.strictEqual(popup.els.filename.value, edits.filename ?? stored.filename);
+    assert.strictEqual(Number(popup.els.quality.value), Number(edits.quality ?? stored.quality));
+    assert.strictEqual(popup.els.qualityVal.textContent, Math.round(Number(edits.quality ?? stored.quality) * 100) + '%');
+    assert.strictEqual(popup.els.format.value, stored.format);
+    assert.strictEqual(popup.els.toClipboard.checked, stored.toClipboard);
+    assert.strictEqual(popup.els.hideScrollbar.checked, stored.hideScrollbar);
+    assert.deepStrictEqual(popup.store.opts, stored, 'reconciliation must not save unfinished edits');
+    assert.strictEqual(popup.mirror.value, cacheBefore);
+    await popup.els[Object.keys(edits)[0]].listeners.change[0]();
+    const expected = { ...stored, ...edits, quality: Number(edits.quality ?? stored.quality) };
+    // The existing save path substitutes the default for an empty Name.
+    if (expected.filename === '') expected.filename = popup.DEFAULTS.filename;
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(popup.store.opts)), expected);
+    assert.deepStrictEqual(JSON.parse(popup.mirror.value), expected);
+  });
+}

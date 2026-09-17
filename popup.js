@@ -4,6 +4,8 @@ const isRecFmt = (f) => f === 'webm' || f === 'mp4' || f === 'gif';
 let activeTab = null;
 let recChanged = false; // the storage listener at the bottom has seen `rec` change
 let optsSaved = false; // save() has stored the form since the popup opened
+let filenameEdited = false; // input can precede change while startup is pending
+let qualityEdited = false;
 
 const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
 
@@ -25,9 +27,11 @@ const WEB_STORE = /^https?:\/\/([\w-]+\.)*(chromewebstore|chrome)\.google\.com([
 
 function apply(o) {
   $('format').value = o.format;
-  $('quality').value = o.quality;
-  $('qualityVal').textContent = Math.round(o.quality * 100) + '%';
-  $('filename').value = o.filename;
+  if (!qualityEdited) {
+    $('quality').value = o.quality;
+    $('qualityVal').textContent = Math.round(o.quality * 100) + '%';
+  }
+  if (!filenameEdited) $('filename').value = o.filename;
   $('toClipboard').checked = o.toClipboard;
   $('hideScrollbar').checked = o.hideScrollbar;
   toggleQuality();
@@ -180,8 +184,9 @@ chrome.storage.local.onChanged.addListener((changes) => {
 });
 
 $('format').addEventListener('change', () => { toggleQuality(); toggleRec(); save(); });
-$('quality').addEventListener('input', () => { $('qualityVal').textContent = Math.round($('quality').value * 100) + '%'; });
+$('quality').addEventListener('input', () => { qualityEdited = true; $('qualityVal').textContent = Math.round($('quality').value * 100) + '%'; });
 $('quality').addEventListener('change', save);
+$('filename').addEventListener('input', () => { filenameEdited = true; });
 $('filename').addEventListener('change', save);
 $('toClipboard').addEventListener('change', save);
 $('hideScrollbar').addEventListener('change', save);
