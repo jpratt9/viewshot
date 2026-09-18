@@ -2211,3 +2211,86 @@ test('the worker hands the audio setting to the offscreen document', async () =>
   await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm', audio: true }, TAB.id);
   assert.strictEqual(sent.find((m) => m.type === 'rec-start-offscreen').audio, true);
 });
+
+// --- the popup says how the capture went (KAN-220) --------------------------
+// Visible and Full page leave the popup open, but the worker answered as soon
+// as the message came in: a failure showed only as a ! for 3 seconds, a
+// success as nothing at all, and the buttons stayed live for a second press.
+
+const MODES = ['visible', 'fullpage', 'region'];
+
+test('a Visible capture from the popup is answered once the image is saved', async () => {
+  const bg = loadBg();
+  const order = [];
+  bg.ctx.chrome.downloads.download = async () => { order.push('downloaded'); };
+  const ret = bg.message({ type: 'capture', mode: 'visible', opts: OPTS, tabId: TAB.id }, (v) => order.push(v));
+  assert.strictEqual(ret, true, 'the port has to stay open for an answer that comes later');
+  await settle();
+  assert.deepStrictEqual(order, ['downloaded', true]);
+});
+
+test('a capture from the popup that fails is answered with its error text, and still flashes the badge', async () => {
+  const bg = loadBg({ captureFails: () => 'Tabs cannot be edited right now' });
+  const replies = [];
+  bg.message({ type: 'capture', mode: 'visible', opts: OPTS, tabId: TAB.id }, (v) => replies.push(JSON.parse(JSON.stringify(v)))); // copy out of the vm realm
+  await settle();
+  assert.deepStrictEqual(replies, [{ error: 'Tabs cannot be edited right now' }]);
+  assert.deepStrictEqual(bg.badges, ['!'], 'the popup may have been closed by then');
+});
+
+test('the popup greys out the mode buttons and says it is capturing until the worker answers', async () => {
+  let answer;
+  const p = loadPopup('https://a.com/x', { reply: new Promise((r) => { answer = r; }) });
+  await p.ready();
+  const done = p.click('visible');
+  await settle();
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [true, true, true], 'a second press would run a second capture over this one');
+  assert.strictEqual(p.els.status.hidden, false);
+  assert.strictEqual(p.els.status.textContent, 'Capturing…');
+  answer(true);
+  await done;
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
+  assert.strictEqual(p.els.status.textContent, 'Saved.');
+});
+
+test('the popup says a copy was copied', async () => {
+  const p = loadPopup('https://a.com/x', { store: { opts: { format: 'png', toClipboard: true } } });
+  await p.ready();
+  await p.click('visible');
+  assert.strictEqual(p.els.status.textContent, 'Copied to the clipboard.');
+});
+
+test('the popup shows the error text of a capture that failed, and gives the buttons back', async () => {
+  const p = loadPopup('https://a.com/x', { reply: { error: 'Full page stopped: another tab is now showing' } });
+  await p.ready();
+  await p.click('fullpage');
+  assert.strictEqual(p.els.err.hidden, false);
+  assert.strictEqual(p.els.err.textContent, 'Full page stopped: another tab is now showing');
+  assert.strictEqual(p.els.status.hidden, true, 'still said it was capturing');
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
+});
+
+test('the popup says so when a capture can\'t reach the worker, and gives the buttons back', async () => {
+  const p = loadPopup('https://a.com/x', { reply: new Error('Could not establish connection. Receiving end does not exist.') });
+  await p.ready();
+  await p.click('visible');
+  assert.strictEqual(p.els.err.hidden, false);
+  assert.match(p.els.err.textContent, /worker/);
+  assert.strictEqual(p.els.status.hidden, true, 'still said it was capturing');
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false], 'left greyed out for a capture that never started');
+});
+
+test('the popup shows which screen Full page is on, and only for its own capture', async () => {
+  let answer;
+  const p = loadPopup('https://a.com/x', { reply: new Promise((r) => { answer = r; }) });
+  await p.ready();
+  p.message({ type: 'capture-progress', screen: 1, screens: 3 }); // a shortcut's: this popup sent nothing
+  assert.ok(!p.els.status || p.els.status.hidden, 'showed progress for a capture this popup never sent');
+  const done = p.click('fullpage');
+  await settle();
+  p.message({ type: 'capture-progress', screen: 2, screens: 3 });
+  assert.strictEqual(p.els.status.textContent, 'Capturing screen 2 of 3…');
+  answer(true);
+  await done;
+  assert.strictEqual(p.els.status.textContent, 'Saved.');
+});

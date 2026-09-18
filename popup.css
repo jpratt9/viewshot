@@ -29,6 +29,8 @@ body {
 .mode.stop:not(:disabled) .ico { color: #e5534b; }
 .mode.stop:disabled .ico { color: #666; }
 .err { margin: 8px 0 0; padding: 7px 9px; background: #2a1414; border: 1px solid #e5534b; border-radius: 6px; color: #ff9b94; font-size: 12px; }
+/* How a Visible or Full page capture is going, and that it was saved or copied (KAN-220). */
+.status { margin: 8px 0 0; padding: 7px 9px; background: #1d1d1d; border: 1px solid #333; border-radius: 6px; color: #cfcfcf; font-size: 12px; }
 .opts { display: flex; flex-direction: column; gap: 9px; }
 .row { display: flex; align-items: center; gap: 8px; }
 .row > span:first-child { width: 52px; color: #9aa0a6; flex-shrink: 0; }

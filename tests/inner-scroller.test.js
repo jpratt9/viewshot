@@ -33,7 +33,7 @@ function load({ body, inner, iw = 1512, ih = 767, dpr = 2 }) {
     chrome: {
       scripting: { executeScript: async ({ func, args }) => [{ result: await func.apply(null, args || []) }] },
       tabs: { captureVisibleTab: async () => { const at = inner ? inner.scrollTop : 0; captureAt.push(at); return (last = PNG + at); }, get: async (id) => ({ id, windowId: 9, active: true }) },
-      runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} } }, commands: { onCommand: { addListener() {} } }, action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
+      runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, sendMessage: async () => {} }, commands: { onCommand: { addListener() {} } }, action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
       storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } }, dom: { openOrClosedShadowRoot: () => null }
     }
   };

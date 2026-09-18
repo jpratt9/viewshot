@@ -67,6 +67,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   const shownAt = [];
   let last = PNG;
   const scriptCalls = [];
+  const sent = []; // what the worker told the popup
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   let pageScriptTimeout; // CAPTURE_SCRIPT_TIMEOUT_MS, likewise
   const context = {
@@ -116,7 +117,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
         // window 9: `leave` says whether it was switched away from or moved.
         get: async (id) => ({ id, windowId: 9, active: true, ...(leaveAt && captureAt.length >= leaveAt ? leave : {}) }),
       },
-      runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
+      runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, sendMessage: async (m) => { sent.push({ ...m }); } }, // copy out of the vm realm
       commands: { onCommand: { addListener() {} } },
       action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
       storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
@@ -132,7 +133,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   vm.runInContext(CODE, context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
-  return { ctx: context, canvases, scriptCalls, captureAt, shownAt };
+  return { ctx: context, canvases, scriptCalls, captureAt, shownAt, sent };
 }
 
 const TAB = { id: 1, windowId: 9 };
@@ -931,4 +932,43 @@ test('saves a page flat enough to shoot the same slice three times over', async 
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 1534, 3068, 4570],
     'a page of one flat colour lost the whole capture');
+});
+
+// --- progress for the popup (KAN-220) --------------------------------------
+// A full page takes about a second a screen, and the popup showed nothing
+// while it ran. The worker now says which screen it is shooting, out of how
+// many the page is tall enough for.
+
+test('tells the popup which screen it is shooting, out of how many', async () => {
+  const { ctx, sent } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(sent, [1, 2, 3, 4].map((screen) => ({ type: 'capture-progress', screen, screens: 4 })));
+});
+
+// A page that loads more once it has been scrolled: `before` tall at the top,
+// `after` from the first scroll away from it on.
+function growingEl(before, after, clientHeight) {
+  let top = 0, grown = false;
+  return {
+    get scrollHeight() { return grown ? after : before; },
+    clientHeight,
+    get scrollTop() { return top; },
+    set scrollTop(v) { top = Math.max(0, Math.min(v, Math.max(0, this.scrollHeight - clientHeight))); if (top > 0) grown = true; },
+    scrollTo(o) { this.scrollTop = o.top; },
+  };
+}
+
+test('counts the screens again when the page grows during the capture', async () => {
+  const { ctx, sent } = load({ de: growingEl(2400, 4000, 800), body: el(4000, 4000), ih: 800, dpr: 1 });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(sent.map((m) => `${m.screen} of ${m.screens}`), ['1 of 3', '2 of 5', '3 of 5', '4 of 5', '5 of 5'],
+    'kept the count the page had before it grew');
+});
+
+test('finishes the stitch when nothing is listening for its progress', async () => {
+  const { ctx, captureAt } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  // A shortcut's capture, or a popup closed since: Chrome rejects the send.
+  ctx.chrome.runtime.sendMessage = async () => { throw new Error('Could not establish connection. Receiving end does not exist.'); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 800, 1600, 2200]);
 });

@@ -172,7 +172,7 @@ test('acknowledges a capture message synchronously, before any await', () => {
 
 test('still runs the capture after acknowledging it', async () => {
   const { listener, queries } = loadBackground();
-  listener({ type: 'capture', mode: 'visible', opts: {} }, {}, () => {});
+  listener({ type: 'capture', mode: 'region', opts: {} }, {}, () => {});
   await settle();
   assert.deepStrictEqual(queries, [{ active: true, currentWindow: true }],
     'the ack must not have replaced the work it acknowledges');

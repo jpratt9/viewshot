@@ -5,8 +5,11 @@ let activeTab = null;
 let recChanged = false; // the storage listener at the bottom has seen `rec` change
 const edited = new Set(); // input can precede change while startup is pending
 let ready = false;
+let capturing = false; // a Visible or Full page this popup sent hasn't been answered yet (KAN-220)
 
-const showError = (text) => { const e = $('err'); e.textContent = text; e.hidden = false; };
+// One box at a time: an error, or how the capture is going.
+const showError = (text) => { $('status').hidden = true; const e = $('err'); e.textContent = text; e.hidden = false; };
+const showStatus = (text) => { $('err').hidden = true; const e = $('status'); e.textContent = text; e.hidden = false; };
 
 // Pages that aren't http(s), file, ftp, chrome://, another extension's page or
 // a data: URL are refused before anything is sent: captures there failed in the
@@ -97,14 +100,15 @@ const toggleAudio = () => { $('audioRow').style.display = ['webm', 'mp4'].includ
 // Recording captures the whole visible tab, so full-page/region don't apply —
 // disable them and relabel the "Visible" button as "Record" for video formats.
 // Record is greyed out too while a recording runs (Stop enabled): a second
-// start would record over that one, and it would be lost.
+// start would record over that one, and it would be lost. All three are
+// greyed out while a capture this popup sent is running (KAN-220).
 function toggleRec() {
   const rec = isRecFmt($('format').value);
   const vis = document.querySelector('.mode[data-mode="visible"]');
   vis.querySelector('.lbl').textContent = rec ? 'Record' : 'Visible';
   vis.querySelector('.ico').textContent = rec ? '●' : '▢';
-  vis.disabled = !ready || rec && !$('stopBtn').disabled;
-  document.querySelectorAll('.mode[data-mode="fullpage"], .mode[data-mode="region"]').forEach((b) => { b.disabled = !ready || rec; });
+  vis.disabled = !ready || capturing || rec && !$('stopBtn').disabled;
+  document.querySelectorAll('.mode[data-mode="fullpage"], .mode[data-mode="region"]').forEach((b) => { b.disabled = !ready || capturing || rec; });
 }
 
 document.querySelectorAll('#modes .mode').forEach((btn) => {
@@ -166,23 +170,33 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
         showError('Chrome doesn’t let extensions run Full page or Region on other extensions’ pages or data: URLs. Visible still works here.');
         return; // keep the popup open so the error is visible
       }
+      // Visible and Full page leave the popup open, and the worker answers them
+      // once the image is saved or copied, or with the error text when the
+      // capture fails. The mode buttons stay greyed out until then (KAN-220):
+      // a second press would run a second capture over this one.
+      const shot = btn.dataset.mode !== 'region';
+      if (shot) { capturing = true; toggleRec(); showStatus('Capturing…'); }
       await save();
       // Wait for the worker to acknowledge before closing anything. window.close()
       // in the same turn as the send tears this frame down while a cold-starting
       // worker is still waking, and the message goes with it - the click did
       // nothing at all, and pressing Region again worked only because the second
       // press met a worker that was already awake.
+      let res;
       try {
-        await chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, tabId: activeTab?.id, opts });
+        res = await chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, tabId: activeTab?.id, opts });
       } catch (e) {
         console.error('[ViewShot] capture message failed:', e);
-        showError('Couldn’t reach the extension worker. Try again.');
-        return; // keep the popup open so the error is visible
+        res = { error: 'Couldn’t reach the extension worker. Try again.' };
+      } finally {
+        if (shot) { capturing = false; toggleRec(); }
       }
+      if (res?.error) { showError(res.error); return; } // keep the popup open so the error is visible
+      if (shot) showStatus(opts.toClipboard ? 'Copied to the clipboard.' : 'Saved.');
       // Region hands the page over to a drag. Left open, the popup covers the
       // dimmed overlay, holds the focus its Escape-to-cancel needs, and makes
       // the dimming look like a bug rather than a live selection.
-      if (btn.dataset.mode === 'region') window.close();
+      else window.close();
     }
   });
 });
@@ -223,6 +237,9 @@ const startup = load().catch(() => {
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // How far a Full page has got (KAN-220). Only while this popup's own capture
+  // runs: the worker sends it for a shortcut's capture too.
+  if (msg?.type === 'capture-progress') { if (capturing) showStatus(`Capturing screen ${msg.screen} of ${msg.screens}…`); return; }
   if (msg?.type === 'shot-clipboard') {
     (async () => {
       try {

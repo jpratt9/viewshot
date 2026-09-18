@@ -1,14 +1,22 @@
 const DEFAULTS = { format: 'jpg', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true, audio: false };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// The `capture` branch answers synchronously, before it starts any work. The
+// Region's `capture` is answered synchronously, before any work starts. The
 // popup closes itself on Region, and a sendMessage whose sender is torn down in
 // the same turn is dropped while the worker is cold-starting - the wake is
 // still in flight when the frame goes away, so the capture never runs at all. A
 // warm worker wins that race, which is why it only failed sometimes: the
 // "press Region twice" bug. The popup awaits this ack before window.close().
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === 'capture') { sendResponse(true); runCapture(msg.mode, msg.opts, msg.tabId).catch(captureFailed); }
+  if (msg?.type === 'capture' && msg.mode === 'region') { sendResponse(true); runCapture(msg.mode, msg.opts, msg.tabId).catch(captureFailed); }
+  // Visible and Full page leave the popup open, so they are answered once the
+  // image is saved or copied, or with the error text when the capture fails,
+  // and the popup says which (KAN-220). The badge still flashes: the popup can
+  // have been closed by then.
+  else if (msg?.type === 'capture') {
+    runCapture(msg.mode, msg.opts, msg.tabId).then(() => sendResponse(true), (e) => { captureFailed(e); sendResponse({ error: e.message || String(e) }); });
+    return true;
+  }
   else if (msg?.type === 'rec-start') {
     if (commandStartPending) { sendResponse(false); return; }
     recStartPending++;
@@ -401,6 +409,10 @@ async function captureFullPage(tab, format) {
       // Stop rather than stack the same viewport down the canvas.
       if (i > 0 && actual <= landed) break;
       landed = actual;
+      // Which screen this is, out of how many the page is now tall enough for,
+      // for the popup (KAN-220). Not waited for, and nothing may be listening:
+      // a shortcut's capture has no popup, and a popup can close mid-stitch.
+      chrome.runtime.sendMessage({ type: 'capture-progress', screen: i + 1, screens: Math.max(i + 1, Math.ceil(m.total / m.vh)) }).catch(() => {});
       // The sticky elements that stick to the page, listed on the first slice
       // and added to on every later one (KAN-503). From here on there is
       // something for the finally to put back.
