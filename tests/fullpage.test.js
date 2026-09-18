@@ -18,7 +18,7 @@ function el(scrollHeight, clientHeight) {
   return {
     scrollHeight, clientHeight,
     get scrollTop() { return top; },
-    set scrollTop(v) { top = Math.max(0, Math.min(v, Math.max(0, scrollHeight - clientHeight))); },
+    set scrollTop(v) { top = Math.max(0, Math.min(v, Math.max(0, this.scrollHeight - clientHeight))); },
     scrollTo(o) { this.scrollTop = o.top; },
   };
 }
@@ -403,6 +403,28 @@ test('stops after one slice when a scroll comes back with nothing', async () => 
 // was when the last slice's scroll left it has had nothing above change
 // height, so the next slice now scrolls on from where that scroll left it
 // (KAN-576).
+
+
+test('KAN-590: lines the slices up on a page that scrolls itself and grows', async () => {
+  const body = el(3000, 713);
+  let baseScroll = 0;
+  body.querySelectorAll = () => {
+    baseScroll = body.scrollTop;
+    return [{ getBoundingClientRect: () => ({ top: 100 - (body.scrollTop - baseScroll), bottom: 110 - (body.scrollTop - baseScroll), height: 10 }) }];
+  };
+  const { ctx, canvases, captureAt } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => {
+    const url = await shoot(...a);
+    if (captureAt.length === 2) {
+      body.scrollTop += 200;
+      body.scrollHeight += 100;
+    }
+    return url;
+  };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2387]);
+});
 
 test('lines the slices up on a page that scrolls itself between them', async () => {
   const body = el(3000, 713);

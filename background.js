@@ -376,6 +376,35 @@ function measurePage() {
   };
 }
 
+function getAnchor(el, de, b) {
+  const isRoot = el === de || el === b || el === document.scrollingElement;
+  const vTop = isRoot ? 0 : el.getBoundingClientRect().top;
+  const vBottom = isRoot ? window.innerHeight : el.getBoundingClientRect().bottom;
+  for (const node of el.querySelectorAll('*')) {
+    const rect = node.getBoundingClientRect();
+    if (rect.top >= vTop && rect.bottom <= vBottom && rect.height > 0) {
+      const pos = getComputedStyle(node).position;
+      if (pos !== 'fixed' && pos !== 'sticky') return node;
+    }
+  }
+  return null;
+}
+
+function getAnchor(el, de, b) {
+  const isRoot = el === de || el === b || el === document.scrollingElement;
+  const vTop = isRoot ? 0 : el.getBoundingClientRect().top;
+  const vBottom = isRoot ? window.innerHeight : el.getBoundingClientRect().bottom;
+  const nodes = el.querySelectorAll ? el.querySelectorAll('*') : [];
+  for (const node of nodes) {
+    const rect = node.getBoundingClientRect();
+    if (rect.top >= vTop && rect.bottom <= vBottom && rect.height > 0) {
+      const pos = getComputedStyle(node).position;
+      if (pos !== 'fixed' && pos !== 'sticky') return node;
+    }
+  }
+  return null;
+}
+
 function scrollAndReport(to, cleanup, last) {
   const de = document.documentElement, b = document.body;
   let el = window.__vsScroller;
@@ -395,6 +424,7 @@ function scrollAndReport(to, cleanup, last) {
   }
   if (cleanup) {
     delete window.__vsScroller;
+    delete window.__vsAnchor;
   }
   const isRoot = el === de || el === b || el === document.scrollingElement;
   // Where the last slice's rows are now, before the page moves. With `last`,
@@ -403,14 +433,21 @@ function scrollAndReport(to, cleanup, last) {
   // with them (KAN-515). A page as tall as it was when that scroll left it has
   // had nothing change height: if it has moved since, it scrolled itself, and
   // the rows are still where that scroll left them (KAN-576).
-  const from = last && el.scrollHeight === last.total ? last.actual : el.scrollTop;
+  let from = el.scrollTop;
+  if (last && window.__vsAnchor && (!document.contains || document.contains(window.__vsAnchor))) {
+    from = el.scrollTop - (last.anchorTop - window.__vsAnchor.getBoundingClientRect().top);
+  } else if (last) {
+    from = el.scrollHeight === last.total ? last.actual : el.scrollTop;
+  }
   if (last) to += from;
   // 'instant' overrides a page's `scroll-behavior: smooth` (Bootstrap 5,
   // Tailwind's scroll-smooth). Without it the scroll animates, the read below
   // still sees the old offset, and the stitch stops after the first screen.
   el.scrollTo({ top: to, behavior: 'instant' });
   if (isRoot) window.scrollTo({ left: 0, top: to, behavior: 'instant' }); // no-op unless the document itself is the scroller
-  return { from, actual: el.scrollTop, total: el.scrollHeight };
+  const anchorNode = getAnchor(el, de, b);
+  window.__vsAnchor = anchorNode;
+  return { from, actual: el.scrollTop, total: el.scrollHeight, anchorTop: anchorNode ? anchorNode.getBoundingClientRect().top : 0 };
 }
 
 // Ask the page for a frame. A window that isn't drawing - minimized, occluded -
