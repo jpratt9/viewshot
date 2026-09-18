@@ -44,7 +44,7 @@ function smoothEl(scrollHeight, clientHeight) {
 
 // background.js in a sandbox wired to a fake page. chrome.*, the canvas, and
 // the capture are all mocked — nothing real is touched.
-function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixed, failAt = 0, leaveAt = 0, leave = {}, frozenAt = 0, sameAt = [] }) {
+function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixed, anchorOff = [], failAt = 0, leaveAt = 0, leave = {}, frozenAt = 0, sameAt = [] }) {
   const canvases = [];
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; this.draws = []; canvases.push(this); }
@@ -78,10 +78,11 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
     // Collapse the settle sleeps so tests stay fast. The capture deadline never passes.
     setTimeout: (fn, ms) => { if (ms !== captureTimeout && ms !== pageScriptTimeout) fn(); },
     HTMLElement,
-    // light: what document.querySelectorAll finds, which is all of `fixed`
+    // light: what document.querySelectorAll('*') finds, which is all of `fixed`
     // unless a test puts some of them in a shadow root and passes its host.
+    // anchorOff: what the query for an inline `overflow-anchor` finds.
     document: {
-      documentElement: de, body, scrollingElement: de, querySelectorAll: () => light,
+      documentElement: de, body, scrollingElement: de, querySelectorAll: (sel) => (sel === '*' ? light : anchorOff),
       getElementById: (id) => styles.get(id) || null,
       createElement: () => ({ remove() { styles.delete(this.id); } }),
       head: { appendChild: (s) => styles.set(s.id, s), prepend: (s) => styles.set(s.id, s) },
@@ -388,7 +389,9 @@ test('stops after one slice when a scroll comes back with nothing', async () => 
 // shot, with a rule put in the way the scrollbar one is (KAN-575). The rule
 // sits in a cascade layer, so a page's own `!important` on a more specific
 // selector doesn't outrank it (KAN-581). It goes first in <head>, so its layer
-// comes before any the page declares (KAN-582).
+// comes before any the page declares (KAN-582). No style sheet rule outranks
+// an `!important` in a style attribute, so an element with one gets the
+// capture's own inline value for the capture (KAN-583).
 
 test('turns scroll anchoring on while the page is shot, and back off after', async () => {
   const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
@@ -441,6 +444,42 @@ test('puts the anchoring rule first in <head>, before any layer the page declare
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(first, ['__vsAnchor'], 'did not put the rule first in <head>');
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
+});
+
+// An element's inline `overflow-anchor`, as [value, priority].
+const inlineAnchor = (e) => [e.style.getPropertyValue('overflow-anchor'), e.style.getPropertyPriority('overflow-anchor')];
+
+test("turns anchoring on over a page's own `!important` in a style attribute, and puts it back after", async () => {
+  const htmlEl = positioned('static'), bodyEl = positioned('static');
+  for (const e of [htmlEl, bodyEl]) e.style.setProperty('overflow-anchor', 'none', 'important');
+  const { ctx } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1, anchorOff: [htmlEl, bodyEl] });
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  const shots = [];
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => { shots.push([htmlEl, bodyEl].map(inlineAnchor)); return shoot(...a); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shots, Array(4).fill([['auto', 'important'], ['auto', 'important']]), "shot a slice with the page's own inline anchoring off");
+  assert.deepStrictEqual([htmlEl, bodyEl].map(inlineAnchor), [['none', 'important'], ['none', 'important']], "did not put the page's own inline anchoring back");
+});
+
+test("leaves a page's own inline anchoring without `!important` to the style sheet rule", async () => {
+  const bodyEl = positioned('static');
+  bodyEl.style.setProperty('overflow-anchor', 'none');
+  const { ctx } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1, anchorOff: [bodyEl] });
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  const shots = [];
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => { shots.push(inlineAnchor(bodyEl)); return shoot(...a); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shots, Array(4).fill(['none', '']), 'changed inline anchoring the style sheet rule already outranks');
+  assert.deepStrictEqual(inlineAnchor(bodyEl), ['none', ''], "changed the page's own inline anchoring");
+});
+
+test("puts back the page's own inline anchoring a capture that died left on", async () => {
+  const htmlEl = positioned('static');
+  htmlEl.style.setProperty('overflow-anchor', 'auto', 'important'); // the capture's own, left on
+  const { ctx } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1, anchorOff: [htmlEl] });
+  ctx.window.__vsAnchored = [[htmlEl, 'none']];
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(inlineAnchor(htmlEl), ['none', 'important'], "left the page's own inline anchoring on");
 });
 
 // --- a stitch that stops part-way ------------------------------------------

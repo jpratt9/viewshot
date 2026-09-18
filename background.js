@@ -338,6 +338,17 @@ function measurePage() {
     style.textContent = '@layer{*{overflow-anchor:auto!important}}';
     (document.head || document.documentElement).prepend(style);
   }
+  // A page's own `!important` in a style attribute outranks every style sheet
+  // rule, so each element with one gets the capture's own inline
+  // `auto !important`, and the cleanup scroll puts the page's back (KAN-583).
+  // A list a capture that died left behind is kept, so those get theirs back.
+  window.__vsAnchored = window.__vsAnchored || [];
+  for (const node of document.querySelectorAll('[style*="overflow-anchor" i]')) {
+    const value = node.style.getPropertyValue('overflow-anchor');
+    if (value === 'auto' || node.style.getPropertyPriority('overflow-anchor') !== 'important') continue;
+    window.__vsAnchored.push([node, value]);
+    node.style.setProperty('overflow-anchor', 'auto', 'important');
+  }
   const de = document.documentElement, b = document.body;
   let el = de.scrollHeight > de.clientHeight + 1 ? de
          : (b && b.scrollHeight > b.clientHeight + 1) ? b
@@ -382,7 +393,12 @@ function scrollAndReport(to, cleanup, fromHere) {
     }
     el = el || document.scrollingElement || de;
   }
-  if (cleanup) { delete window.__vsScroller; document.getElementById('__vsAnchor')?.remove(); }
+  if (cleanup) {
+    delete window.__vsScroller;
+    document.getElementById('__vsAnchor')?.remove();
+    for (const [node, value] of window.__vsAnchored || []) node.style.setProperty('overflow-anchor', value, 'important');
+    delete window.__vsAnchored;
+  }
   const isRoot = el === de || el === b || el === document.scrollingElement;
   // Where the page is before it moves. fromHere scrolls `to` on from there.
   const from = el.scrollTop;
