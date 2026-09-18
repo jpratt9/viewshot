@@ -336,12 +336,15 @@ function measurePage() {
   // capture's scrolls on its snap points, not where the slices ask, and the
   // rows between two slices the snap points pulled apart were never shot
   // (KAN-600).
-  if (!document.getElementById('__vsAnchor')) {
-    const style = document.createElement('style');
+  // A rule a capture that died left behind is kept, and gets this rule's text:
+  // one left before KAN-600 doesn't turn snapping off (KAN-607).
+  let style = document.getElementById('__vsAnchor');
+  if (!style) {
+    style = document.createElement('style');
     style.id = '__vsAnchor';
-    style.textContent = '@layer{*{overflow-anchor:auto!important;scroll-snap-type:none!important}}';
     (document.head || document.documentElement).prepend(style);
   }
+  style.textContent = '@layer{*{overflow-anchor:auto!important;scroll-snap-type:none!important}}';
   // A page's own `!important` in a style attribute outranks every style sheet
   // rule, so each element with one gets the capture's own inline
   // `auto !important`, and the cleanup scroll puts the page's back (KAN-583).
