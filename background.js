@@ -620,7 +620,7 @@ async function startRecording(streamId, opts, tabId) {
   // where injection fails, blipRecordingIndicator returns immediately and we
   // skip straight to recording — the badge + Chrome's own blue capture border
   // are still visible to the user as recording-active cues.
-  const glowGone = tab ? await blipRecordingIndicator(tab.id) : null;
+  const blip = tab ? await blipRecordingIndicator(tab.id) : null;
   // Query the captured tab's ACTUAL viewport (innerWidth/innerHeight). NOT
   // chrome.windows.get(), which is the outer window (tab strip + omnibox +
   // bookmarks bar all included): tabCapture only streams the web-contents
@@ -632,7 +632,7 @@ async function startRecording(streamId, opts, tabId) {
   const dims = await getViewport(tab);
   // The glow is still on screen: the page reports when it is gone, and the
   // viewport read above has already run while it was showing.
-  if (glowGone) await glowGone;
+  if (blip) await blip.gone;
   // Stop removes `rec`, and it can land while the blip or the viewport read is
   // still under way: up to two deadlines on a page that never answers. A
   // recorder started after that would run on with nothing that can stop it.
@@ -681,11 +681,16 @@ const BLIP_ANIM_MS = 650;
 // reports its glow. o.animate() doesn't paint when the script runs — the
 // animation starts on the page's next frame — and a page busy enough to miss
 // the blip's deadline is the one that may not produce that frame for a while.
-// So the page gets the same 2s to produce it that it gets to run the script.
-const BLIP_HOLD_MS = SCRIPT_TIMEOUT_MS + BLIP_ANIM_MS + 50;
-// Answers null when the page showed nothing, otherwise a promise that settles
-// once the page says its glow is gone — or at the ceiling, for a page that
-// never says so. The report, not the worker's clock, is what ends the hold.
+// No longer than the viewport read's own deadline, which the hold overlaps: a
+// start then never takes longer than its two script deadlines, and the stream
+// id budget above (a start and one queued behind it inside ~10 s) still holds.
+const BLIP_HOLD_MS = SCRIPT_TIMEOUT_MS;
+// Answers null when the page showed nothing, otherwise { gone }: a promise that
+// settles once the page says its glow is gone — or at the ceiling, for a page
+// that never says so. The report, not the worker's clock, is what ends the
+// hold. Wrapped, not returned bare: an async function hands back the promise it
+// returns as its own, so the caller's await would sit through the whole hold
+// before the viewport read it is meant to overlap.
 async function blipRecordingIndicator(tabId) {
   const deadline = Date.now() + SCRIPT_TIMEOUT_MS; // when the start stops waiting for the script
   const ceiling = sleep(SCRIPT_TIMEOUT_MS + BLIP_HOLD_MS); // deadline + BLIP_HOLD_MS, from the same start
@@ -734,7 +739,7 @@ async function blipRecordingIndicator(tabId) {
     // still has a glow to report, and the hold below is what waits for it.
     if (Date.now() < deadline) { done(); return null; }
   }
-  return Promise.race([reported, ceiling.then(done)]);
+  return { gone: Promise.race([reported, ceiling.then(done)]) };
 }
 
 async function stopRecording() {

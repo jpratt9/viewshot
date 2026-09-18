@@ -1550,9 +1550,15 @@ test('a glow that finishes long after the script ran still holds the recorder', 
   document.createElement = () => ({ style: {}, remove() {}, animate: () => ({ finished: new Promise((r) => { finish = r; }) }) });
   const deliver = chrome.runtime.sendMessage;
   chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') startedAt = bg.ctx.Date.now(); return deliver(m); };
+  const run = chrome.scripting.executeScript;
+  let scripts = 0;
+  chrome.scripting.executeScript = (o) => { scripts++; return run(o); };
   const start = bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
   await settle();
   assert.strictEqual(startedAt, undefined, 'the recorder started while the glow had yet to play');
+  // The viewport read runs while the glow plays, not after it: on a page this
+  // busy it has a deadline of its own to use up, and the two used to overlap.
+  assert.strictEqual(scripts, 2, 'the viewport read waited for the hold instead of running inside it');
   bg.tick(1500); // the page frees up; the glow plays and is gone
   const gone = bg.ctx.Date.now();
   finish();
@@ -1570,7 +1576,7 @@ test('a page that runs the blip after its deadline holds the recorder for nothin
   let runScript;
   chrome.scripting.executeScript = (o) => new Promise((res) => { runScript = () => res(run(o)); }); // the page is busy until runScript()
   let over = false;
-  bg.ctx.blipRecordingIndicator(TAB.id).then(() => { over = true; });
+  bg.ctx.blipRecordingIndicator(TAB.id).then((blip) => blip?.gone).then(() => { over = true; }); // over once its hold is
   await settle();
   bg.tick(vm.runInContext('SCRIPT_TIMEOUT_MS', bg.ctx) + 500); // past the deadline
   const answered = bg.ctx.Date.now();
@@ -1587,7 +1593,7 @@ test('a report from another blip does not end this one\'s hold', async () => {
   let finish;
   document.createElement = () => ({ style: {}, remove() {}, animate: () => ({ finished: new Promise((r) => { finish = r; }) }) });
   let over = false;
-  bg.ctx.blipRecordingIndicator(TAB.id).then(() => { over = true; });
+  bg.ctx.blipRecordingIndicator(TAB.id).then((blip) => blip?.gone).then(() => { over = true; }); // over once its hold is
   await settle();
   await chrome.runtime.sendMessage({ type: 'blip-done', id: 'an-earlier-blip' }); // a page from a start before this one
   await settle();
@@ -1728,7 +1734,7 @@ test('a blip the page answers and reports in time leaves the start nothing to ho
   const { document } = bg.ctx;
   document.createElement = animating(bg);
   let over = false;
-  bg.ctx.blipRecordingIndicator(TAB.id).then(() => { over = true; });
+  bg.ctx.blipRecordingIndicator(TAB.id).then((blip) => blip?.gone).then(() => { over = true; }); // over once its hold is
   await settle(); // the page ran the script, and its glow has faded
   assert.ok(over, 'the start was held for a glow the page had already said was gone');
 });

@@ -157,3 +157,31 @@ Done as planned, with three departures, all in how the change is tested or bound
 - **Step 8 — nothing else changed.** `git status --short` lists only `background.js`, `tests/capture-errors.test.js` and this plan.
 
 The open question on the ceiling is unchanged: none of these runs reached it — the busy page's report came at 4111 ms, well inside the ceiling at ~4.7 s from the blip's start.
+
+## The open question, settled — and a bug found settling it
+
+**The ceiling is the viewport read's own deadline: `BLIP_HOLD_MS = SCRIPT_TIMEOUT_MS`.** A page that never reports gets 2 s past the blip's deadline, not 2.7 s.
+
+- **The repo already sets the budget.** The comment above `SCRIPT_TIMEOUT_MS` (`background.js:178-186`) records that the stream id the popup mints only works for about 10 s — Chrome 152 took one used at 9.2 s and refused one used at 10.3 s — and that "two 2 s deadlines leave a start, and one queued behind it, time to use theirs". A start that a queued one waits behind (`recStartGate`) must therefore stay within its two script deadlines, about 4 s from the blip.
+- **2.7 s past the deadline breaks that.** It makes a start's worst case about 4.7 s from the blip, and a start queued behind it uses its stream id at about 9.4 s plus overheads — at the 10 s edge, where the recording fails outright.
+- **2 s past the deadline costs nothing.** The hold overlaps the viewport read, whose own deadline already ends 4 s from the blip, so no start takes longer than it did before this ticket.
+
+**Settling it turned up a bug in `d1601a7`: the hold no longer overlapped the viewport read.** `blipRecordingIndicator` is `async`, and an async function hands back a promise it returns as its own. So `await blipRecordingIndicator(...)` sat through the whole hold, and only then did `getViewport` start. The plan said the overlap was kept; it wasn't. On a page that stays blocked, the viewport read's 2 s deadline was paid after the hold instead of during it. The unit tests missed it because the fake `executeScript` answers at once, so the viewport read never had to wait.
+
+- **Fix:** `blipRecordingIndicator` returns `{ gone }` — the race wrapped in an object, so the caller's `await` gets it back straight after the injection — and `startRecording` awaits `blip.gone` after the viewport read.
+- **Test:** "a glow that finishes long after the script ran still holds the recorder" now also asserts that the viewport read ran while the hold was pending. It fails with `d1601a7`'s shape of those three lines restored and passes with the fix. The three tests that watched the hold settle now wait on `.gone`; they had been passing on the wrapper's own settling. `npm test` passes 285.
+
+**Measured**, Chrome 153.0.8010.48, `--headless=new`, the busy page from "Implementation and verification": the main thread is blocked 1.9 s from the Record press, then for a further *n* ms the moment the overlay goes in. The worker was instrumented with timestamps in a copy of the extension. Times are ms from the press.
+
+| blocked after the overlay | blip returned | viewport read done | hold over | glow gone | recorder started | green frames |
+|---|---|---|---|---|---|---|
+| 0 (the KAN-387 case) | 1905 | 1911 | 2551 — the report | 2550 | 2552 | 0 of 7 |
+| 1200 ms | 2027 | 3112 | 3773 — the report | 3768 | 3776 | 0 of 6 |
+| 1500 ms | 2056 | 3418 | 4052 — the ceiling | 4083 | 4056 | 0 of 5 |
+| 5000 ms | 2043 | 4046 | 4046 — the ceiling | 7583 | **4048** | 8 of 25 |
+| 5000 ms, **`d1601a7`'s shape** | **4035** — sat through the hold | **6040** — only started after it | 6040 | 7561 | **6043** | — |
+
+- **"blip returned" is now at the blip's deadline** (about 2 s), and the viewport read finishes while the hold is still pending. Under `d1601a7`'s shape, blip returned at 4035 and the viewport read only finished at 6040.
+- **A start that never gets a report now takes 4.0 s from the blip**, its two script deadlines, where `d1601a7`'s shape took 6.0 s with this ceiling (and about 6.7 s with the 2.7 s one it shipped).
+- **Pages that free up within the 2 s grace record clean.** The 1500 ms case ended on the ceiling 27 ms before the fade's last frame; those 27 ms of an ease-out fade to 0 are invisible, and the file has no green or faintly tinted frame.
+- **A page still blocked more than 2 s past the deadline still puts its glow in the recording** (the 5000 ms row: its animation only started at about 6900 ms). This is the case the ceiling exists to give up on. Covering it means holding a start past its two deadlines, which spends the time a queued start needs for its stream id. `d1601a7` didn't cover it either — its recorder started at about 6.7 s, before this glow.
