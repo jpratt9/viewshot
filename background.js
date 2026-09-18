@@ -18,7 +18,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const start = recStartGate
       .then(() => startRecording(msg.streamId, msg.opts, msg.tabId))
       .then(() => sendResponse(true), (e) => { console.error('[ViewShot]', e); sendResponse(false); return recFailed(); });
-    recStartGate = start.catch(() => {}).finally(() => { recStartPending--; });
+    recStartGate = start.catch(() => {}).finally(() => { recStartPending--; closeOffscreen().catch(e => console.error('[ViewShot]', e)); });
     return true;
   }
   else if (msg?.type === 'rec-stop') stopRecording().catch((e) => console.error('[ViewShot]', e));
@@ -69,7 +69,7 @@ chrome.commands.onCommand.addListener(async (cmd, tab) => {
       console.error('[ViewShot]', e);
       await flashBadge('!');
     });
-    recStartGate = start.catch(() => {}).finally(() => { recStartPending--; commandStartPending = false; });
+    recStartGate = start.catch(() => {}).finally(() => { recStartPending--; commandStartPending = false; closeOffscreen().catch(e => console.error('[ViewShot]', e)); });
     await recStartGate;
     return;
   }
@@ -596,7 +596,7 @@ async function flashBadge(text) {
 // A start that failed, here or in the offscreen document: nothing is
 // recording, so drop `rec` (an open popup follows it) and flash ! over REC.
 function recFailed() {
-  return chrome.storage.local.remove('rec').then(() => flashBadge('!'));
+  return chrome.storage.local.remove('rec').then(() => flashBadge('!')).finally(closeOffscreen);
 }
 
 // Starts go through this gate one at a time, each once the one before has
@@ -768,6 +768,7 @@ async function stopRecording() {
   await chrome.storage.local.remove('rec');
   await chrome.action.setBadgeText({ text: '' });
   await chrome.runtime.sendMessage({ type: 'rec-stop-offscreen', filename });
+  closeOffscreen().catch((e) => console.error('[ViewShot]', e));
   return true;
 }
 

@@ -1853,7 +1853,7 @@ test('the frame cap still flashes MAX when it ends a recording', async () => {
   bg.message({ type: 'rec-cap-hit' });
   await settle();
   assert.deepStrictEqual(bg.badges, ['MAX'], 'the cap did not report that it had ended the recording');
-  assert.deepStrictEqual(sent, ['rec-stop-offscreen'], 'the recording was never stopped');
+  assert.deepStrictEqual(sent, ['rec-stop-offscreen', 'offscreen-busy'], 'the recording was never stopped');
   assert.strictEqual(store.rec, undefined, 'the recording was left marked as running');
 });
 
