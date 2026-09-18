@@ -279,16 +279,18 @@ Choices:
 
 Nothing beyond the open question below.
 
-## Open questions
+## Open questions — settled
 
-1. **Should an element that turns up in reaction to the capture's own scroll be hidden in that same slice?**
+This was left out of the change and filed instead, the way KAN-503 itself came out of KAN-403's plan.
+
+- **The ticket's cause is fixed.** The ticket is about the list being made once. Every later slice now adds to it, so the repeat in every later slice is gone.
+- **What is left is about when the passes run, not what they list.** Every per-slice pass runs straight after the scroll, before the settle (`background.js:374-381`). Moving them all is a change the ticket didn't ask for.
+
+1. **Should an element that turns up in reaction to the capture's own scroll be hidden in that same slice?** Not in this change. It is filed as **KAN-517**, which is blocked by KAN-503.
    - **What Chrome showed:** PageG's `#nav` turns sticky on the scroll to the second slice, and is stuck there at once. In 2 of 3 runs, that slice's listing ran before the page's scroll handler, and `#nav` was stitched in once at the top of the second slice (773-822).
    - **What this plan does:** it hides such an element from the next slice on.
    - **What the other way would take:** hiding it in the same slice means listing and checking after the page has reacted to the scroll, after the 500 ms settle for example. The capture would then have to wait for a frame painted after the hide.
    - **What that would affect:** it moves every sticky check (KAN-403, KAN-501, KAN-502) and would need its own measurements.
-   - The ticket doesn't say which it wants.
-
-   Filed as KAN-517, blocked by KAN-503.
 
 ## Added when shipping
 
