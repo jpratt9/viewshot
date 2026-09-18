@@ -24,6 +24,7 @@ A fast, minimal, **open-source** Chrome extension for screenshots — capture th
 - `storage` — remember your settings and whether a recording is running
 - `offscreen` — copy to the clipboard and record, which the background service worker can't do
 - `tabCapture` — get the tab's video for recording
+- `clipboardWrite` — copy screenshots directly to your clipboard
 
 ## Development
 There's no build step and nothing to install: Chrome runs the files in this folder as they are. After changing one, press the reload button on ViewShot's card in `chrome://extensions`.

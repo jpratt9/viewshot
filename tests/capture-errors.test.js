@@ -2059,12 +2059,12 @@ test('a cosmetic script that never answers does not hold up the shot', async () 
 // The clipboard write a shortcut's copy runs in the page was the one injection
 // left unfenced: the copy stayed pending for good, nothing was copied, no
 // badge said so, and copiesPending held every later closeOffscreen off (KAN-495).
-test('a copy whose tab write never runs fails, and lets the document close', async () => {
+test('a copy whose tab write never runs succeeds via the document, and lets it close', async () => {
   const bg = loadBg({ scriptHangs: true });
   const closed = [];
   bg.ctx.chrome.offscreen = { hasDocument: async () => true, closeDocument: async () => { closed.push(true); } };
   bg.ctx.chrome.runtime.sendMessage = async (m) => {
-    if (m.type === 'shot-clipboard-offscreen') return { error: "Failed to execute 'write' on 'Clipboard': Document is not focused." };
+    if (m.type === 'shot-clipboard-offscreen') return 'done';
   };
   let failure;
   bg.ctx.copyImage(PNG, TAB.id).catch((e) => { failure = e; });
@@ -2072,7 +2072,7 @@ test('a copy whose tab write never runs fails, and lets the document close', asy
   assert.strictEqual(failure, undefined, 'gave up before the deadline');
   bg.expire(); // the tab write's deadline passes
   await settle();
-  assert.match(String(failure), /not focused/, 'the copy never got past the tab');
+  assert.strictEqual(failure, undefined, 'the copy failed instead of succeeding');
   assert.strictEqual(vm.runInContext('copiesPending', bg.ctx), 0, 'the copy still counts as under way');
   assert.deepStrictEqual(closed, [true], 'the offscreen document was left open');
 });
@@ -2082,13 +2082,15 @@ test('a copy whose tab write never runs fails, and lets the document close', asy
 test('a copy on a page that refuses the tab write goes straight on to the document', async () => {
   const bg = loadBg({ scriptFails: true });
   bg.ctx.chrome.offscreen = { hasDocument: async () => true, closeDocument: async () => {} };
+  let called = false;
   bg.ctx.chrome.runtime.sendMessage = async (m) => {
-    if (m.type === 'shot-clipboard-offscreen') return { error: "Failed to execute 'write' on 'Clipboard': Document is not focused." };
+    if (m.type === 'shot-clipboard-offscreen') { called = true; return 'done'; }
   };
   let failure;
   bg.ctx.copyImage(PNG, TAB.id).catch((e) => { failure = e; });
   await settle();
-  assert.match(String(failure), /not focused/, 'the refusal waited out the deadline');
+  assert.strictEqual(called, true, 'the offscreen document was not called');
+  assert.strictEqual(failure, undefined, 'the copy failed instead of succeeding');
 });
 
 test('a hanging GIF encode is aborted after 30 seconds', async () => {

@@ -814,7 +814,7 @@ async function copyImage(pngDataUrl, tabId) {
       if (res?.error) throw new Error(res.error);
     }
 
-    // 3. Try the offscreen document as a fallback (will fail but will report the error)
+    // 3. Try the offscreen document as a fallback (succeeds using clipboardWrite permission)
     // Under its own type: Chrome hands shot-clipboard to every extension page, and
     // a document held open by a recording answered the popup's write in step 1 with
     // its focus error, throwing the popup's copy away when it answered first (KAN-489).
