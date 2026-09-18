@@ -551,6 +551,11 @@ async function closeOffscreen() {
     // the document in between lost the recording, so ask it first. One that
     // can't answer has no recording in it.
     if ((await chrome.runtime.sendMessage({ type: 'offscreen-busy' }).catch(() => false)) === true) return;
+    // Two uses of the document count as neither: a start, which writes `rec`
+    // only after ensureOffscreen, and a clipboard copy waiting on its write.
+    // Closing under a start left it recording nothing. Read after the awaits,
+    // so one that began during them counts as well.
+    if (recStartPending || copiesPending) return;
     await chrome.offscreen.closeDocument();
   } catch (e) {
     console.warn('[ViewShot] closeDocument failed:', e);
@@ -558,14 +563,18 @@ async function closeOffscreen() {
 }
 
 // ---- clipboard via the offscreen document ----
+// Copies still writing: from their ensureOffscreen until the document answers.
+let copiesPending = 0;
 async function copyImage(pngDataUrl) {
   // The offscreen listener answers only after the clipboard write resolves, so
   // awaiting here means it is safe to tear the document down straight after.
   // A new document that never answered is closed too.
+  copiesPending++;
   try {
     await ensureOffscreen();
     await chrome.runtime.sendMessage({ type: 'shot-clipboard', dataUrl: pngDataUrl });
   } finally {
+    copiesPending--;
     await closeOffscreen();
   }
 }

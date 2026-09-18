@@ -168,6 +168,28 @@ test('a saved recording leaves the document to another one still being saved in 
   assert.strictEqual(docLives(), true);
 });
 
+// A copy uses the document from its ensureOffscreen until the document answers
+// the write, and the document doesn't count it: rec-saved in between closed
+// the document under the write, and the copy failed.
+test('a saved recording leaves the document to a clipboard write still under way in it', async () => {
+  const { ctx, calls, docLives, send } = load();
+  let answer;
+  ctx.chrome.runtime.sendMessage = async (m) => {
+    calls.sent.push(m);
+    if (m.type === 'shot-clipboard') return new Promise((r) => { answer = r; });
+    return m.type === 'offscreen-ping' ? 'pong' : 'done';
+  };
+  const copy = ctx.copyImage(PNG);
+  await new Promise((r) => setImmediate(r)); // the write is under way
+  send({ type: 'rec-saved' });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(calls.close, 0, 'closing mid-write would fail the copy');
+  assert.strictEqual(docLives(), true);
+  answer('done');
+  await copy;
+  assert.strictEqual(calls.close, 1, 'the copy left its document open');
+});
+
 // Nothing waits on the listener's close, so a failure in it is only ever seen
 // if the listener logs it.
 test('a saved recording whose close fails logs it', async () => {

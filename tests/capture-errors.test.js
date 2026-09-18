@@ -1537,6 +1537,60 @@ test('a saved recording tells the worker once the download is done with the file
   assert.deepStrictEqual(o.sent.map((m) => m.type), ['rec-saved'], 'nothing told the worker the document could be closed');
 });
 
+// --- a close while a recording is starting ----------------------------------
+// A start writes `rec` only after ensureOffscreen, and the document has no
+// recording of its own until the start reaches it, so closeOffscreen saw
+// nothing in between. A close there - a clipboard copy finishing, or rec-saved
+// - left the start writing `rec` against a document that was gone: REC came
+// off, nothing was recorded, and no ! showed.
+
+// A document that can be closed, and a start held past ensureOffscreen: its
+// offscreen-id question waits for answers.id(). holdBusy holds the document's
+// offscreen-busy answer the same way, until answers.busy().
+function heldStart(bg, { holdBusy = false } = {}) {
+  const { chrome } = bg.ctx;
+  const store = keepStore(chrome);
+  const doc = { open: true, closes: 0 };
+  chrome.offscreen = { hasDocument: async () => doc.open, closeDocument: async () => { doc.closes++; doc.open = false; } };
+  const started = [];
+  const answers = {};
+  chrome.runtime.sendMessage = async (m) => {
+    if (m.type === 'offscreen-id') return answers.id ? 'doc-1' : new Promise((r) => { answers.id = () => r('doc-1'); });
+    if (m.type === 'offscreen-busy' && holdBusy) return new Promise((r) => { answers.busy = () => r(false); });
+    if (m.type === 'rec-start-offscreen') { if (!doc.open) throw new Error(UNREACHABLE); started.push(m.streamId); }
+  };
+  return { store, doc, started, answers };
+}
+
+test('a close while a recording is starting leaves the start its document', async () => {
+  const bg = loadBg();
+  const { store, doc, started, answers } = heldStart(bg);
+  bg.message(WEBM_START, () => {});
+  await settle(); // past ensureOffscreen, and `rec` not written yet
+  bg.message({ type: 'rec-saved' }); // a recording's file let go meanwhile
+  await settle();
+  assert.strictEqual(doc.closes, 0, 'the document was closed under a recording that was starting');
+  answers.id();
+  await settle();
+  assert.deepStrictEqual(started, ['sid'], 'the start recorded nothing');
+  assert.strictEqual(store.rec?.url, TAB.url, 'the start was forgotten');
+});
+
+test('a close already asking the document when a recording starts leaves the start its document', async () => {
+  const bg = loadBg();
+  const { doc, started, answers } = heldStart(bg, { holdBusy: true });
+  bg.message({ type: 'rec-saved' }); // nothing is starting yet
+  await settle(); // the close waits on offscreen-busy
+  bg.message(WEBM_START, () => {});
+  await settle(); // the start is past ensureOffscreen
+  answers.busy(); // the document has nothing in it yet
+  await settle();
+  assert.strictEqual(doc.closes, 0, 'a close that began before the start closed the document under it');
+  answers.id();
+  await settle();
+  assert.deepStrictEqual(started, ['sid'], 'the start recorded nothing');
+});
+
 // --- a Stop while getUserMedia is still answering ---------------------------
 // The worker reads `rec` for the last time before it sends rec-start-offscreen,
 // so a Stop pressed after that could reach the offscreen document before its
