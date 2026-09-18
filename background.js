@@ -373,8 +373,9 @@ async function captureFullPage(tab, format) {
       // something for the finally to put back.
       if (positions.length > 1) { await markSticky(tab, i === 0); hid = true; }
       // Keep fixed elements (pinned headers, banners) on the FIRST slice only;
-      // hide them on later slices so they aren't stitched in repeatedly.
-      if (i === 1) await setFixedHidden(tab, true);
+      // hide them on later slices so they aren't stitched in repeatedly, and
+      // on each one the ones that have turned up since (KAN-516).
+      if (i > 0) await setFixedHidden(tab, true, i === 1);
       // Sticky ones only in the slices they are stuck in (KAN-403), the first
       // included: a `bottom` one can be stuck there already (KAN-501).
       if (hid) await hideStuckSticky(tab);
@@ -498,15 +499,18 @@ async function hideStuckSticky(tab) {
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 
-async function setFixedHidden(tab, hide) {
+async function setFixedHidden(tab, hide, first = false) {
   await scriptWithTimeout({
     target: { tabId: tab.id },
-    func: (doHide) => {
+    func: (doHide, first) => {
       if (doHide) {
         // Only `fixed`: it is pinned to the viewport wherever the page is, so
         // every later slice would stitch it in again. Sticky elements are
-        // hideStuckSticky's, slice by slice.
-        const list = [];
+        // hideStuckSticky's, slice by slice. After the first pass, only the
+        // ones that have turned up since are added: put in the page, or made
+        // fixed, once it scrolled (KAN-516). One hidden already keeps the
+        // visibility recorded for it: by now it has the `hidden` it was given.
+        const list = first ? [] : window.__shotHidden || [];
         // Shadow roots too, the same walk as markSticky's (KAN-507):
         // executeScript serializes each standalone, so they can't share it.
         const roots = [document];
@@ -514,7 +518,7 @@ async function setFixedHidden(tab, hide) {
           for (const el of roots.pop().querySelectorAll('*')) {
             const shadow = el instanceof HTMLElement && chrome.dom.openOrClosedShadowRoot(el);
             if (shadow) roots.push(shadow);
-            if (getComputedStyle(el).position !== 'fixed') continue;
+            if (getComputedStyle(el).position !== 'fixed' || list.some(([e]) => e === el)) continue;
             list.push([el, el.style.visibility]); el.style.visibility = 'hidden';
           }
         }
@@ -528,7 +532,7 @@ async function setFixedHidden(tab, hide) {
         window.__shotSticky = null;
       }
     },
-    args: [hide],
+    args: [hide, first],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 

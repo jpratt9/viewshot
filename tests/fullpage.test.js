@@ -594,11 +594,56 @@ test('runs no sticky pass on a page that fits one screen', async () => {
   assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'reportFrame', 'scrollAndReport'], 'ran the sticky passes on a page with one slice');
 });
 
-test('hides fixed elements once, and lists and checks sticky ones on every slice', async () => {
+test('hides fixed elements on every slice but the first, and lists and checks sticky ones on every slice', async () => {
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(3052, 767) });
   await ctx.captureFullPage(TAB);
-  // the fixed hide and the restore once each, and the sticky listing and check on each of the four slices
-  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 10, 'the fixed hide ran more than once, or a slice went unlisted or unchecked');
+  // the fixed hide on each of the three slices after the first, the restore once, and the sticky listing and check on each of the four slices
+  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 12, 'the fixed hide ran on the first slice or missed a later one, or a slice went unlisted or unchecked');
+});
+
+// --- fixed elements that turn up after the second slice ---------------------
+// The fixed hide ran once, on the second slice, so a fixed element the page put
+// in, or pinned, after it was never hidden: it was stitched into every later
+// slice at the same spot on the screen (KAN-516). Every slice after the first
+// now hides the ones that have turned up since.
+
+test('hides a fixed element the page adds after the second slice', async () => {
+  // A cookie banner the page only puts in once it has scrolled to the third
+  // slice: the fixed hide on the second can't find it (KAN-516).
+  const body = el(3000, 713);
+  const banner = positioned('fixed', 663, 713);
+  const light = []; // what the page has in it
+  const scrollTo = body.scrollTo;
+  body.scrollTo = function (o) { scrollTo.call(this, o); if (this.scrollTop >= 1426 && !light.length) light.push(banner); };
+  const { ctx, captureAt, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [banner], light });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287]);
+  // Not in the page for the first two slices, hidden in the three after.
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', 'hidden', 'hidden', 'hidden'], 'the banner was stitched into the slices after it turned up');
+  assert.strictEqual(banner.style.visibility, '', 'left the banner hidden');
+});
+
+test('hides an element the page only makes fixed after the second slice', async () => {
+  // A header the page only pins to the viewport once it has scrolled to the
+  // third slice: the fixed hide on the second reads it as static (KAN-516).
+  const body = el(3000, 713);
+  const header = positioned('fixed', 0, 60);
+  Object.defineProperty(header, 'pos', { get: () => (body.scrollTop >= 1426 ? 'fixed' : 'static') });
+  const { ctx, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [header] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', 'hidden', 'hidden', 'hidden'], 'the header was stitched into the slices after it was pinned');
+  assert.strictEqual(header.style.visibility, '', 'left the header hidden');
+});
+
+test('starts a new fixed list on the first fixed hide', async () => {
+  // A capture that never got to its restore leaves its list on the page. The
+  // next one's first fixed hide lists the page afresh rather than adding to
+  // that list: an element on it may have left the page since (KAN-516).
+  const gone = positioned('fixed', 100, 140);
+  const { ctx } = load({ de: el(767, 767), body: el(3052, 767) });
+  ctx.window.__shotHidden = [[gone, '']];
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(gone.seen, [], 'wrote to an element on a list an earlier capture left behind');
 });
 
 // --- fixed and sticky elements inside a shadow root -------------------------
