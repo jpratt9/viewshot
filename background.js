@@ -563,10 +563,12 @@ async function captureFullPage(tab, format, popupId) {
         // finished by the shot (KAN-599). A page that scrolled itself again in
         // that settle goes back once more, and is shot without settling: in
         // that time, a page that scrolls itself after every scroll did it
-        // again, and was shot where it scrolled to (KAN-596). Twice, and only
-        // before the slice is shot: a page that scrolls itself again before
-        // that shot is shot where it is.
-        if (!url && backs < 2 && frame.top !== reached && frame.total === total) {
+        // again, and was shot where it scrolled to (KAN-596). Twice at most: a
+        // page that scrolls itself again before that shot is shot where it is.
+        // A second shot, for a fixed element that turned up after the first
+        // (KAN-525), is drawn in the same place, so the page goes back before
+        // that one too (KAN-605).
+        if (backs < 2 && frame.top !== reached && frame.total === total) {
           await scrollPageTo(tab, reached);
           backs++;
           continue;

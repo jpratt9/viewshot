@@ -413,7 +413,9 @@ test('lines the slices up on a page that scrolls itself between them', async () 
 // again, and was shot where it scrolled to (KAN-596). That shot caught what
 // the put-back set off, a fade-in for one, part-way, so the slice now settles
 // once more first. A page that moves again in that settle goes back a second
-// time, and is shot without settling (KAN-599).
+// time, and is shot without settling (KAN-599). A slice shot again for a
+// fixed element (KAN-525) goes back the same way before that second shot
+// (KAN-605).
 
 test('puts a page that scrolls itself while a slice settles back before it shoots that slice', async () => {
   const body = el(3000, 713);
@@ -481,11 +483,11 @@ test('lets a slice it puts back settle before it shoots it', async () => {
   assert.deepStrictEqual(fadedAt, [true, true, true, true, true], 'shot the slice it put back before the band faded in');
 });
 
-test('shoots a slice again where the page is when it scrolls itself while that second shot settles', async () => {
+test("puts a page that scrolls itself while a slice's second shot settles back before that shot", async () => {
   // A banner turns up after the second slice's last fixed hide, so that slice
   // is shot again (KAN-525), and the page scrolls itself 200 px down while
-  // that second shot settles. A slice is only put back before it is shot, so
-  // the second shot is taken where the page scrolled to (KAN-605).
+  // that second shot settles. The second shot is the one drawn, where the
+  // slice's scroll left the page, so the page goes back before it (KAN-605).
   const body = el(3000, 713);
   const banner = positioned('fixed', 663, 713);
   const light = []; // what the page has in it
@@ -502,7 +504,7 @@ test('shoots a slice again where the page is when it scrolls itself while that s
   const get = ctx.fetch;
   ctx.fetch = (url) => { drawn.push(Number(url.split('#')[1])); return get(url); };
   await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(captureAt, [0, 713, 913, 1426, 2139, 2287], 'put the page back after the slice was shot');
+  assert.deepStrictEqual(captureAt, [0, 713, 713, 1426, 2139, 2287], 'shot the slice again where the page scrolled itself to');
   assert.deepStrictEqual(drawn, [1, 3, 4, 5, 6]);
 });
 
