@@ -184,6 +184,14 @@ Checked while planning, on a copy of the repo outside this folder:
 
 - The AAC track Chrome writes is 44.1 kHz, while the Opus track in WebM is 48 kHz. Both play; nothing depends on the rate.
 
-## Open questions
+## Open questions — settled
 
-None. The ticket says what to change, and the headed Chrome 153 check above records H.264 + AAC MP4 files that AVFoundation decodes.
+The plan left no question open, but two points were left undecided or unchecked. Both are settled here, and neither changes the code shipped in `39ecdce`.
+
+1. **What should an MP4 with audio do where AAC isn't supported?** Keep the fallback as shipped: `video/mp4;codecs=avc1`, then `video/mp4`, with Chrome choosing the audio codec.
+   - `pickMime` already falls back through a list for both formats: VP9, VP8, plain WebM; H.264, plain MP4. And KAN-222 leaves MP4 to the existing error path where Chrome can't record it at all.
+   - The ticket asks for the tab's audio in MP4 and for AAC. AAC is what Chrome 153 uses on macOS, where QuickTime Player runs.
+   - With the option on, a recording that keeps its sound in another codec is closer to what was asked for than one that silently drops it.
+2. **Listening in QuickTime Player** (step 4 left this for John).
+   - The MP4 recorded in step 4 was decoded with `afconvert`, which goes through AudioToolbox, the same AAC decoder QuickTime Player uses.
+   - It decoded to 3.62 s of 44.1 kHz stereo at -55.1 dB mean. Within a narrow 440 Hz band the mean was -55.2 dB, and with 440 Hz notched out it was -90.3 dB. The audio track is the page's tone and nothing else.
