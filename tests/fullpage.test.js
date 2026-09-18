@@ -385,7 +385,9 @@ test('stops after one slice when a scroll comes back with nothing', async () => 
 // anchoring moves the offset (KAN-515). A page with `overflow-anchor: none`
 // moves the rows on screen instead, so the slices after it were drawn off from
 // the ones before. Anchoring is now on for every element while the page is
-// shot, with a rule put in the way the scrollbar one is (KAN-575).
+// shot, with a rule put in the way the scrollbar one is (KAN-575). The rule
+// sits in a cascade layer, so a page's own `!important` on a more specific
+// selector doesn't outrank it (KAN-581).
 
 test('turns scroll anchoring on while the page is shot, and back off after', async () => {
   const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
@@ -393,7 +395,7 @@ test('turns scroll anchoring on while the page is shot, and back off after', asy
   const rules = [];
   ctx.chrome.tabs.captureVisibleTab = async (...a) => { rules.push(styles.get('__vsAnchor')?.textContent); return shoot(...a); };
   await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(rules, Array(4).fill('*{overflow-anchor:auto!important}'), 'shot a slice without the rule');
+  assert.deepStrictEqual(rules, Array(4).fill('@layer{*{overflow-anchor:auto!important}}'), 'shot a slice without the rule');
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
@@ -409,7 +411,7 @@ test('takes the anchoring rule back out when a slice fails', async () => {
 
 test('uses the anchoring rule a capture that died left behind, and takes it out', async () => {
   const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
-  const left = { id: '__vsAnchor', textContent: '*{overflow-anchor:auto!important}', remove() { styles.delete(this.id); } };
+  const left = { id: '__vsAnchor', textContent: '@layer{*{overflow-anchor:auto!important}}', remove() { styles.delete(this.id); } };
   styles.set(left.id, left);
   const add = ctx.document.head.appendChild;
   let added = 0;

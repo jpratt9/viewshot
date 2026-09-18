@@ -328,10 +328,12 @@ function measurePage() {
   // Scroll anchoring on for the capture, over a page's own `overflow-anchor:
   // none`: content above the screen that changes height then moves the offset,
   // which is how the stitch sees it (KAN-575). The cleanup scroll takes it out.
+  // The rule sits in a cascade layer, where `!important` outranks a page's own
+  // `!important` outside one, whatever its selector (KAN-581).
   if (!document.getElementById('__vsAnchor')) {
     const style = document.createElement('style');
     style.id = '__vsAnchor';
-    style.textContent = '*{overflow-anchor:auto!important}';
+    style.textContent = '@layer{*{overflow-anchor:auto!important}}';
     (document.head || document.documentElement).appendChild(style);
   }
   const de = document.documentElement, b = document.body;
