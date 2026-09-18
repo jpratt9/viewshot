@@ -383,10 +383,11 @@ async function captureFullPage(tab, format) {
   const pageHeight = m.rect ? headerH + m.total + footerH : m.total;
   const h = Math.round(pageHeight * m.dpr);
   const side = MAX_SIDE[format] || MAX_SIDE.png; // a recording format is saved as PNG
-  const scale = Math.min(1, side / w, side / h, Math.sqrt(MAX_AREA / (w * h)));
+  let scale = Math.min(1, side / w, side / h, Math.sqrt(MAX_AREA / (w * h)));
+  const initialScale = scale;
   let canvas = new OffscreenCanvas(Math.floor(w * scale), Math.floor(h * scale));
   let ctx = canvas.getContext('2d');
-  const maxCanvasHeight = Math.floor(Math.min(side, MAX_AREA / (w * scale)));
+  let maxCanvasHeight = Math.floor(Math.min(side, MAX_AREA / (w * scale)));
 
   let hid = false, landed = 0, target = 0, i = 0;
   let footerCanvas = null;
@@ -436,6 +437,32 @@ async function captureFullPage(tab, format) {
       const now = await chrome.tabs.get(tab.id);
       if (!now.active || now.windowId !== tab.windowId) throw new Error('Full page stopped: another tab is now showing');
       const bmp = await createImageBitmap(await (await fetch(url)).blob());
+      
+      const sliceTopTemp = m.rect ? Math.round(Math.max(0, m.rect.top) * m.dpr) : 0;
+      const sliceBottomTemp = m.rect ? Math.round(Math.min(m.winH, m.rect.bottom) * m.dpr) : 0;
+      const sliceHTemp = m.rect ? Math.max(0, sliceBottomTemp - sliceTopTemp) : 0;
+      
+      const currentBottom = m.rect
+        ? Math.round((Math.max(0, m.rect.top) + actual) * m.dpr * scale + sliceHTemp * scale)
+        : Math.round((actual * m.dpr + bmp.height) * scale);
+
+      if (currentBottom > maxCanvasHeight) {
+        const pageHeight = m.rect ? Math.max(0, m.rect.top) + m.total + Math.max(0, m.winH - m.rect.bottom) : m.total;
+        const new_h = Math.round(pageHeight * m.dpr);
+        const newScale = Math.min(1, side / w, side / new_h, Math.sqrt(MAX_AREA / (w * new_h)));
+        if (newScale < scale) {
+          const oldScale = scale;
+          scale = newScale;
+          maxCanvasHeight = Math.floor(Math.min(side, MAX_AREA / (w * scale)));
+          
+          const newDrawBottom = Math.round(currentBottom / oldScale * scale);
+          const newCanvas = new OffscreenCanvas(Math.floor(w * scale), Math.min(maxCanvasHeight, newDrawBottom + 2000));
+          newCanvas.getContext('2d').drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, newCanvas.width, Math.round(canvas.height * (scale / oldScale)));
+          canvas = newCanvas;
+          ctx = canvas.getContext('2d');
+        }
+      }
+
       // Whole rows at each end, so scaled slices meet without a seam.
       if (m.rect) {
         if (i === 0) {
@@ -485,7 +512,9 @@ async function captureFullPage(tab, format) {
 
     if (footerCanvas) {
       const drawFooterTop = Math.round((Math.max(0, m.rect.top) + landed + m.vh) * m.dpr * scale);
-      const finalHeight = drawFooterTop + footerCanvas.height;
+      const drawFooterW = Math.round(footerCanvas.width * (scale / initialScale));
+      const drawFooterH = Math.round(footerCanvas.height * (scale / initialScale));
+      const finalHeight = drawFooterTop + drawFooterH;
       if (finalHeight > canvas.height && drawFooterTop <= maxCanvasHeight) {
         const newCanvas = new OffscreenCanvas(canvas.width, Math.min(maxCanvasHeight, finalHeight));
         newCanvas.getContext('2d').drawImage(canvas, 0, 0);
@@ -493,7 +522,7 @@ async function captureFullPage(tab, format) {
         ctx = canvas.getContext('2d');
       }
       if (drawFooterTop <= maxCanvasHeight) {
-        ctx.drawImage(footerCanvas, 0, drawFooterTop);
+        ctx.drawImage(footerCanvas, 0, 0, footerCanvas.width, footerCanvas.height, 0, drawFooterTop, drawFooterW, drawFooterH);
       }
     }
   } finally {
