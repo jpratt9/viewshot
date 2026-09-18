@@ -376,7 +376,7 @@ function measurePage() {
   };
 }
 
-function scrollAndReport(to, cleanup, fromHere) {
+function scrollAndReport(to, cleanup, last) {
   const de = document.documentElement, b = document.body;
   let el = window.__vsScroller;
   if (!el) {
@@ -400,9 +400,14 @@ function scrollAndReport(to, cleanup, fromHere) {
     delete window.__vsAnchored;
   }
   const isRoot = el === de || el === b || el === document.scrollingElement;
-  // Where the page is before it moves. fromHere scrolls `to` on from there.
-  const from = el.scrollTop;
-  if (fromHere) to += from;
+  // Where the last slice's rows are now, before the page moves. With `last`,
+  // the last slice's report, `to` is scrolled on from there. Content above
+  // them that changed height moved them, and scroll anchoring moved the page
+  // with them (KAN-515). A page as tall as it was when that scroll left it has
+  // had nothing change height: if it has moved since, it scrolled itself, and
+  // the rows are still where that scroll left them (KAN-576).
+  const from = last && el.scrollHeight === last.total ? last.actual : el.scrollTop;
+  if (last) to += from;
   // 'instant' overrides a page's `scroll-behavior: smooth` (Bootstrap 5,
   // Tailwind's scroll-smooth). Without it the scroll animates, the read below
   // still sees the old offset, and the stitch stops after the first screen.
@@ -435,13 +440,13 @@ async function pageIsDrawing(tab) {
   return result === true;
 }
 
-// Scroll to y (with fromHere, y past where the page is now) and report where
-// the page ACTUALLY landed. The caller stitches at the returned offset rather
-// than the requested one, so a page that clamps, animates, or ignores the
-// scroll still produces a correctly aligned image.
-async function scrollPageTo(tab, y, cleanup = false, fromHere = false) {
+// Scroll to y (with `last`, the last slice's report, y past where its rows are
+// now) and report where the page ACTUALLY landed. The caller stitches at the
+// returned offset rather than the requested one, so a page that clamps,
+// animates, or ignores the scroll still produces a correctly aligned image.
+async function scrollPageTo(tab, y, cleanup = false, last = null) {
   const [{ result }] = await scriptWithTimeout({
-    target: { tabId: tab.id }, func: scrollAndReport, args: [y, cleanup, fromHere],
+    target: { tabId: tab.id }, func: scrollAndReport, args: [y, cleanup, last],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
   return result || { from: 0, actual: 0, total: 0 };
 }
@@ -473,6 +478,7 @@ async function captureFullPage(tab, format, popupId) {
   let maxCanvasHeight = Math.floor(Math.min(side, MAX_AREA / (w * scale)));
 
   let hid = false, landed = 0, target = 0, i = 0;
+  let last = null; // the last slice's scroll report: where it left the page, and how tall the page was (KAN-576)
   let footerCanvas = null;
   // finally: a slice that throws part-way must still put the page back, not
   // leave it scrolled to where the stitch stopped with its headers hidden.
@@ -484,7 +490,8 @@ async function captureFullPage(tab, format, popupId) {
       // moves the page with them, so they are now `moved` px from where they
       // were drawn. The slice is drawn, and the page's height counted, that
       // much back, so it lines up with the slices before it (KAN-515).
-      const { from, actual: reached, total } = await scrollPageTo(tab, target - landed, false, i > 0);
+      last = await scrollPageTo(tab, target - landed, false, last);
+      const { from, actual: reached, total } = last;
       const moved = i > 0 ? from - landed : 0;
       const actual = reached - moved;
       m.total = total - moved;

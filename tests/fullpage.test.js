@@ -381,6 +381,27 @@ test('stops after one slice when a scroll comes back with nothing', async () => 
   assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0], 'went on past a scroll that came back with nothing');
 });
 
+// --- a page that scrolls itself between slices -----------------------------
+// Each slice scrolled on from where the page was, so a page that scrolled
+// itself between slices had its own scroll taken for content above the screen
+// changing height: the rows it scrolled past were left out, and every slice
+// after was drawn that far above where the page has it. A page as tall as it
+// was when the last slice's scroll left it has had nothing above change
+// height, so the next slice now scrolls on from where that scroll left it
+// (KAN-576).
+
+test('lines the slices up on a page that scrolls itself between them', async () => {
+  const body = el(3000, 713);
+  const { ctx, canvases, captureAt } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  // The page scrolls itself 200 px down right after the second shot. Its height doesn't change.
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => { const url = await shoot(...a); if (captureAt.length === 2) body.scrollTop += 200; return url; };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287], 'scrolled on from where the page scrolled itself to');
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287], "drew the slices back by the page's own scroll");
+  assert.strictEqual(canvases[canvases.length - 1].height, 3000, "cut the image short by the page's own scroll");
+});
+
 // --- pages that turn scroll anchoring off ----------------------------------
 // The stitch sees content above the screen change height by how far scroll
 // anchoring moves the offset (KAN-515). A page with `overflow-anchor: none`
