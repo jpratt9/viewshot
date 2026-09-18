@@ -119,8 +119,16 @@ chrome.commands.onCommand.addListener(async (cmd, tab) => {
 // restart. The recording itself lives in the offscreen document, which is gone
 // once Chrome restarts or the extension is installed, updated or reloaded, so
 // after either of those nothing is recording, whatever the key says.
-chrome.runtime.onStartup.addListener(() => chrome.storage.local.remove('rec'));
-chrome.runtime.onInstalled.addListener(() => chrome.storage.local.remove('rec'));
+chrome.runtime.onStartup.addListener(async () => {
+  const { rec } = await chrome.storage.local.get('rec');
+  if (rec) ensureOffscreen().catch(e => console.error('[ViewShot]', e));
+  await chrome.storage.local.remove('rec');
+});
+chrome.runtime.onInstalled.addListener(async () => {
+  const { rec } = await chrome.storage.local.get('rec');
+  if (rec) ensureOffscreen().catch(e => console.error('[ViewShot]', e));
+  await chrome.storage.local.remove('rec');
+});
 
 // Every read of `rec` goes through here, and every read checks it. The
 // recording only ever lives in the offscreen document, so a key with no
@@ -146,6 +154,7 @@ async function getRec() {
     if (id == null || id === rec.docId) return rec; // no answer is not an answer
   }
   console.warn('[ViewShot] a recording was marked as running in an offscreen document that is gone; forgetting it');
+  ensureOffscreen().catch(e => console.error('[ViewShot]', e));
   await chrome.storage.local.remove('rec');
   await chrome.action.setBadgeText({ text: '' }); // REC over nothing
 }
