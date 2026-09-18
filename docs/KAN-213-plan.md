@@ -258,9 +258,17 @@ Checked while planning, on a copy of the repo outside this folder:
 4. Check that nothing else changed.
    → verify: `git status --short` lists only the three files above and this plan.
 
-## Open questions
+## Open questions — settled
 
-None. The ticket leaves the choice between queueing and ignoring to the implementer, and this plan queues, for the reasons under "Choices".
+The plan left none open. The ticket leaves the choice between queueing and ignoring to the implementer, and this plan queues, for the reasons under "Choices".
+
+One point came up while closing the ticket. It is settled here, and it doesn't change the code shipped in `5e95ea1`.
+
+1. **Does "Disable the popup buttons while a capture is running" mean a popup opened mid-capture has to grey its buttons out too?** Not for this ticket.
+   - The ticket asks for it so that a second press can't start a capture on top of a running one: "Nothing stops a second capture from starting while a full-page capture is still running."
+   - The popup that sent a capture greys its buttons out until it is answered (KAN-220).
+   - A press anywhere else, in another popup or through a shortcut, now waits its turn on `runGate`. No press can run on top of a capture any more.
+   - A popup opened mid-capture showing that capture, with its buttons greyed out, is KAN-545.
 
 ## Added when shipping
 
