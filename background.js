@@ -35,7 +35,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // that reports trouble with a recording that is finished.
   else if (msg?.type === 'rec-cap-hit') stopRecording().then((stopped) => { if (stopped) return flashBadge('MAX'); }).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'shot-region') {
-    chrome.storage.session.get('pendingRegion').then(async ({ pendingRegion }) => {
+    // Its turn like any capture's (runGate, KAN-213): alongside a full page,
+    // its finally took the scrollbar style away in the middle of the stitch.
+    const shot = runGate.then(() => chrome.storage.session.get('pendingRegion')).then(async ({ pendingRegion }) => {
       if (!pendingRegion) return;
       await chrome.storage.session.remove('pendingRegion');
       const { tab, opts } = pendingRegion;
@@ -54,7 +56,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       } finally {
         if (opts.hideScrollbar) await setScrollbarHidden(tab, false).catch(() => {});
       }
-    }).catch(captureFailed);
+    });
+    runGate = shot.catch(() => {});
+    shot.catch(captureFailed);
   }
   else if (msg?.type === 'rec-failed') recFailed();
   // A recording's file is saved and the document has let go of it. Nothing else
@@ -239,28 +243,44 @@ function captureFailed(e) {
   flashBadge('!').catch(() => {});
 }
 
-async function runCapture(mode, opts, tabId) {
-  const tab = await getActiveTab(tabId);
-  if (!tab) throw new Error('No tab to capture'); // flash the badge rather than do nothing
-  await cancelRegion(tab); // an abandoned overlay would otherwise dim this shot
+// One capture at a time (KAN-213). captureGate only spaces out the single
+// captureVisibleTab calls, so a second capture - a shortcut pressed twice, or
+// a shortcut during the popup's capture - ran alongside the first. Two full
+// pages scrolled the same page under each other and shot each other's
+// offsets; the second one recorded the headers the first had hidden as their
+// own visibility, so they were left hidden; and one capture's finally took
+// the scrollbar style away while the other was still shooting. Now a capture
+// waits for the one before it to finish, and so does a Region's shot
+// (shot-region). Its page scripts and captureVisibleTab calls each have a
+// deadline (CAPTURE_SCRIPT_TIMEOUT_MS, CAPTURE_TIMEOUT_MS), so a page or a
+// shot that never answers can't hold the others up for good.
+let runGate = Promise.resolve();
+function runCapture(mode, opts, tabId) {
+  const run = runGate.then(async () => {
+    const tab = await getActiveTab(tabId);
+    if (!tab) throw new Error('No tab to capture'); // flash the badge rather than do nothing
+    await cancelRegion(tab); // an abandoned overlay would otherwise dim this shot
   
-  if (mode === 'region') {
-    if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
-    await chrome.storage.session.set({ pendingRegion: { tab, opts } });
-    await captureRegion(tab);
-    return;
-  }
+    if (mode === 'region') {
+      if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
+      await chrome.storage.session.set({ pendingRegion: { tab, opts } });
+      await captureRegion(tab);
+      return;
+    }
 
-  let png;
-  if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
-  try {
-    if (mode === 'visible') png = await captureVisible(tab.windowId);
-    else if (mode === 'fullpage') png = await captureFullPage(tab, opts.toClipboard ? 'png' : opts.format);
-  } finally {
-    if (opts.hideScrollbar) await setScrollbarHidden(tab, false); // restore
-  }
-  if (!png) return;
-  await saveCapture(png, opts, tab);
+    let png;
+    if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
+    try {
+      if (mode === 'visible') png = await captureVisible(tab.windowId);
+      else if (mode === 'fullpage') png = await captureFullPage(tab, opts.toClipboard ? 'png' : opts.format);
+    } finally {
+      if (opts.hideScrollbar) await setScrollbarHidden(tab, false); // restore
+    }
+    if (!png) return;
+    await saveCapture(png, opts, tab);
+  });
+  runGate = run.catch(() => {}); // one capture's failure must not stall the next
+  return run;
 }
 
 // ---- re-encode to chosen format/quality via OffscreenCanvas ----

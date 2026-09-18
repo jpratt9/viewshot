@@ -2294,3 +2294,16 @@ test('the popup shows which screen Full page is on, and only for its own capture
   await done;
   assert.strictEqual(p.els.status.textContent, 'Saved.');
 });
+
+// --- one capture at a time (KAN-213) ---------------------------------------
+// A capture waits for the one before it to finish. One that fails must still
+// let the next one through.
+
+test('a capture that fails does not hold up the one waiting behind it', async () => {
+  const bg = loadBg();
+  const first = bg.ctx.runCapture('visible', OPTS, 99); // that tab has closed
+  const second = bg.ctx.runCapture('visible', OPTS, TAB.id);
+  await assert.rejects(first, /No tab with id: 99/);
+  await second;
+  assert.strictEqual(bg.shots.length, 1, 'the second capture never ran');
+});

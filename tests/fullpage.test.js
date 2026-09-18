@@ -68,6 +68,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   let last = PNG;
   const scriptCalls = [];
   const sent = []; // what the worker told the popup
+  let onMessage; // background.js's chrome.runtime.onMessage listener
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   let pageScriptTimeout; // CAPTURE_SCRIPT_TIMEOUT_MS, likewise
   const context = {
@@ -117,7 +118,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
         // window 9: `leave` says whether it was switched away from or moved.
         get: async (id) => ({ id, windowId: 9, active: true, ...(leaveAt && captureAt.length >= leaveAt ? leave : {}) }),
       },
-      runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, sendMessage: async (m) => { sent.push({ ...m }); } }, // copy out of the vm realm
+      runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, sendMessage: async (m) => { sent.push({ ...m }); } }, // copy out of the vm realm
       commands: { onCommand: { addListener() {} } },
       action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
       storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
@@ -133,7 +134,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   vm.runInContext(CODE, context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
-  return { ctx: context, canvases, scriptCalls, captureAt, shownAt, sent };
+  return { ctx: context, canvases, scriptCalls, captureAt, shownAt, sent, message: (m) => onMessage(m, {}, () => {}) };
 }
 
 const TAB = { id: 1, windowId: 9 };
@@ -971,4 +972,97 @@ test('finishes the stitch when nothing is listening for its progress', async () 
   ctx.chrome.runtime.sendMessage = async () => { throw new Error('Could not establish connection. Receiving end does not exist.'); };
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(captureAt, [0, 800, 1600, 2200]);
+});
+
+// --- one capture at a time (KAN-213) ---------------------------------------
+// Only the single captureVisibleTab calls went through a gate, so a second
+// capture ran alongside the first: a shortcut pressed twice, or a shortcut
+// during the popup's capture. Two full pages scrolled the same page under each
+// other, the headers the first had hidden stayed hidden, and one capture's
+// finally took the scrollbar style away while the other was still shooting.
+
+const RUN_OPTS = { format: 'png', quality: 1, filename: 'x', toClipboard: false, hideScrollbar: true };
+const settle = () => new Promise((r) => setImmediate(r));
+
+// What runCapture needs beyond the stitch: session storage for the Region key,
+// and somewhere to save to.
+function forRunCapture(ctx, session = {}) {
+  ctx.chrome.storage.session = {
+    get: async (k) => ({ [k]: session[k] }),
+    set: async (o) => { Object.assign(session, o); },
+    remove: async (k) => { delete session[k]; },
+  };
+  const saved = [];
+  ctx.chrome.downloads = { download: async (o) => { saved.push(o.filename); } };
+  return saved;
+}
+
+// The <style> setScrollbarHidden puts in the page, and whether it was there
+// for each shot.
+function scrollbarStyle(ctx) {
+  const byId = new Map();
+  Object.assign(ctx.document, {
+    getElementById: (id) => byId.get(id) || null,
+    createElement: () => { const el = { remove: () => byId.delete(el.id) }; return el; },
+    head: { appendChild: (el) => byId.set(el.id, el) },
+  });
+  const shots = [];
+  const capture = ctx.chrome.tabs.captureVisibleTab;
+  ctx.chrome.tabs.captureVisibleTab = (...a) => { shots.push(byId.has('__shotHideScrollbar')); return capture(...a); };
+  return { shots, inPlace: () => byId.has('__shotHideScrollbar') };
+}
+
+test('runs a second full page only once the first has finished', async () => {
+  const { ctx, captureAt } = load({ de: el(767, 767), body: el(3052, 767) });
+  const saved = forRunCapture(ctx);
+  await Promise.all([ctx.runCapture('fullpage', RUN_OPTS, TAB.id), ctx.runCapture('fullpage', RUN_OPTS, TAB.id)]);
+  assert.deepStrictEqual(captureAt, [0, 767, 1534, 2285, 0, 767, 1534, 2285], 'the two stitches scrolled the page under each other');
+  assert.strictEqual(saved.length, 2);
+});
+
+test('leaves a pinned header shown after two full pages at once', async () => {
+  const header = { style: { visibility: '' } };
+  const { ctx, shownAt } = load({ de: el(767, 767), body: el(3052, 767), fixed: [header] });
+  forRunCapture(ctx);
+  await Promise.all([ctx.runCapture('fullpage', RUN_OPTS, TAB.id), ctx.runCapture('fullpage', RUN_OPTS, TAB.id)]);
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', 'hidden', 'hidden', 'hidden', '', 'hidden', 'hidden', 'hidden']);
+  assert.strictEqual(header.style.visibility, '', 'left the pinned header hidden');
+});
+
+test('keeps the scrollbar hidden for a whole full page when a visible is asked for during it', async () => {
+  const { ctx } = load({ de: el(767, 767), body: el(3052, 767) });
+  forRunCapture(ctx);
+  const bar = scrollbarStyle(ctx);
+  await Promise.all([ctx.runCapture('fullpage', RUN_OPTS, TAB.id), ctx.runCapture('visible', RUN_OPTS, TAB.id)]);
+  assert.deepStrictEqual(bar.shots, [true, true, true, true, true], 'the scrollbar came back during the stitch');
+  assert.strictEqual(bar.inPlace(), false, 'left the scrollbar hidden');
+});
+
+test('puts a Region\'s overlay up only once a full page asked for before it has finished', async () => {
+  const { ctx, captureAt } = load({ de: el(767, 767), body: el(3052, 767) });
+  forRunCapture(ctx);
+  const overlays = [];
+  const execute = ctx.chrome.scripting.executeScript;
+  ctx.chrome.scripting.executeScript = async (o) => {
+    if (o.files) { overlays.push(`after ${captureAt.length} shots`); return [{}]; } // region.js
+    return execute(o);
+  };
+  await Promise.all([ctx.runCapture('fullpage', RUN_OPTS, TAB.id), ctx.runCapture('region', RUN_OPTS, TAB.id)]);
+  assert.deepStrictEqual(overlays, ['after 4 shots'], 'the overlay went up in the middle of the stitch');
+});
+
+test('finishes a Region shot before a full page asked for after it starts', async () => {
+  const body = el(3052, 767);
+  body.scrollTop = 640; // where the user made the selection
+  const { ctx, captureAt, message } = load({ de: el(767, 767), body });
+  const saved = forRunCapture(ctx, { pendingRegion: { tab: TAB, opts: RUN_OPTS } });
+  const bar = scrollbarStyle(ctx);
+  await ctx.setScrollbarHidden(TAB, true); // the Region hid it when it started
+  message({ type: 'shot-region', rect: { x: 0, y: 0, w: 100, h: 100, dpr: 2 } });
+  await ctx.runCapture('fullpage', RUN_OPTS, TAB.id);
+  for (let i = 0; i < 5; i++) await settle();
+  assert.deepStrictEqual(captureAt, [640, 0, 767, 1534, 2285]);
+  assert.deepStrictEqual(bar.shots, [true, true, true, true, true], 'the Region took the scrollbar style away during the stitch');
+  assert.strictEqual(saved.length, 2);
+  assert.strictEqual(bar.inPlace(), false, 'left the scrollbar hidden');
 });
