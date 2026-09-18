@@ -602,6 +602,42 @@ test('leaves a sticky header in a component inside a scroller where it is painte
   assert.ok(!header.seen.includes('hidden'), 'blanked a header stuck inside the scroller its component sits in');
 });
 
+test('leaves a sticky header slotted into a scroller inside a component where it is painted', async () => {
+  // The header is the page's own, but the component lays it out under a
+  // <slot> inside a scrolled box, and that box is what it sticks to. The slot
+  // takes the header itself or a wrapper it sits in; either way its parent in
+  // the page is the component (KAN-509).
+  const cases = {
+    'the header slotted': (header, host, slot) => Object.assign(header, { parentElement: host, assignedSlot: slot }),
+    'a wrapper slotted': (header, host, slot) => Object.assign(header, { parentElement: { parentElement: host, assignedSlot: slot } }),
+  };
+  for (const [name, place] of Object.entries(cases)) {
+    const body = el(3052, 767);
+    const header = positioned('sticky');
+    header.getBoundingClientRect = () => {
+      const top = (header.style.getPropertyValue('position') === 'static' ? 100 : 400) - body.scrollTop;
+      return { top, bottom: top + 30 };
+    };
+    place(header, shadowHost('open'), { parentElement: { overflow: 'auto' } }); // the slot, in the box
+    const { ctx } = load({ de: el(767, 767), body, fixed: [header] });
+    await ctx.captureFullPage(TAB);
+    assert.ok(!header.seen.includes('hidden'), `blanked a header shown through a slot in a scroller (${name})`);
+  }
+});
+
+test('reads a slotted sticky element as the page\'s when nothing around its slot scrolls', async () => {
+  // Climbing through the slot mustn't make every slotted element its own: with
+  // no scroller between the slot and the page, a bottom bar stuck to the first
+  // screen is still read at its place in the page (KAN-501, KAN-509).
+  const body = el(3000, 713);
+  const bar = stickyToBottomAt(body, 2400, 0, 713);
+  const around = {}; // what the slot sits in, in the component's shadow tree
+  Object.assign(bar, { parentElement: shadowHost('open', around), assignedSlot: { parentElement: around } });
+  const { ctx, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [bar] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['hidden', 'hidden', 'hidden', '', ''], 'read a bar slotted with nothing around it that scrolls as painted');
+});
+
 test('asks chrome.dom about HTMLElements only', async () => {
   // It throws on anything else, an <svg> icon say, and a throw there stops
   // the capture. Nothing but an HTMLElement can host a shadow root anyway.
