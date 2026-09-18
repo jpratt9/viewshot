@@ -521,9 +521,9 @@ async function captureFullPage(tab, format, popupId) {
         await hideStuckSticky(tab);
       }
       // A slice can be shot twice: see the fixed hide after the shot (KAN-525).
-      let url;
+      let url, back = false;
       for (let shot = 1; ; shot++) {
-        await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
+        if (!back) await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
         // And the fixed ones the page put in, or pinned, while it settled: the
         // hide above ran before they were there (KAN-522). It goes before the
         // frame check, so the frame the shot waits for has this hide in it.
@@ -544,11 +544,14 @@ async function captureFullPage(tab, format, popupId) {
         // A page that scrolled itself while the slice settled, and is as tall
         // as it was, would be shot where it scrolled to and drawn where the
         // slice's scroll left it: the rows between were left out, and the ones
-        // past them went in twice (KAN-592). It goes back, and the slice settles
-        // and runs the passes that follow the settle again before it is shot.
-        // Once: a page that scrolls itself again is shot where it is.
+        // past them went in twice (KAN-592). It goes back, and the slice runs
+        // the passes that follow the settle again and is shot, without settling
+        // again: in that time, a page that scrolls itself after every scroll did
+        // it again, and was shot where it scrolled to (KAN-596). Once: a page
+        // that scrolls itself again before that is shot where it is.
         if (shot === 1 && frame.top !== reached && frame.total === total) {
           await scrollPageTo(tab, reached);
+          back = true;
           continue;
         }
         url = await captureVisible(tab.windowId);

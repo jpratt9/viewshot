@@ -407,8 +407,9 @@ test('lines the slices up on a page that scrolls itself between them', async () 
 // had settled. A page that scrolled itself while the slice settled was shot
 // where it scrolled to: the rows between were left out, and the ones past them
 // went in twice. The frame check now says where the page is, and a page that
-// has moved and is as tall as it was goes back, and the slice settles again,
-// once (KAN-592).
+// has moved and is as tall as it was goes back, once (KAN-592). It is shot
+// without settling again: a page that scrolls itself on every settle did it
+// again, and was shot where it scrolled to (KAN-596).
 
 test('puts a page that scrolls itself while a slice settles back before it shoots that slice', async () => {
   const body = el(3000, 713);
@@ -423,15 +424,31 @@ test('puts a page that scrolls itself while a slice settles back before it shoot
   assert.strictEqual(canvases[canvases.length - 1].height, 3000, 'cut the image short');
 });
 
-test('shoots a slice where the page is when it scrolls itself again after it is put back', async () => {
+test('shoots a slice it puts back before the page scrolls itself again', async () => {
   // A page that scrolls itself 200 px down each time the second slice
   // settles. It stops after five, so a stitch that puts it back every time
   // still ends.
   const body = el(3000, 713);
-  const { ctx, captureAt, scriptCalls } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  const { ctx, canvases, captureAt, scriptCalls } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
   let scrolls = 0;
   const timer = ctx.setTimeout;
   ctx.setTimeout = (fn, ms) => { if (ms === 500 && body.scrollTop === 713 && scrolls < 5) { scrolls++; body.scrollTop += 200; } return timer(fn, ms); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287], 'let the page settle again, and shot it where it scrolled itself to');
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
+  assert.strictEqual(canvases[canvases.length - 1].height, 3000, 'cut the image short');
+  assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 7, 'did not put the page back once');
+});
+
+test('shoots a slice where the page is when it scrolls itself again before that shot', async () => {
+  // A page that scrolls itself 200 px down each time it is asked for a frame
+  // at 713, straight after it is put back too. It stops after five, so a
+  // stitch that puts it back every time still ends.
+  const body = el(3000, 713);
+  const { ctx, captureAt, scriptCalls } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  let scrolls = 0;
+  const frame = ctx.requestAnimationFrame;
+  ctx.requestAnimationFrame = (cb) => { if (body.scrollTop === 713 && scrolls < 5) { scrolls++; body.scrollTop += 200; } return frame(cb); };
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(captureAt, [0, 913, 1426, 2139, 2287], 'put the page back more than once');
   assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 7, 'did not put the page back once');
