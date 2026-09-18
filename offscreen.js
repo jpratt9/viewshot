@@ -176,11 +176,14 @@ async function startRecording(streamId, format, width, height, cssPx) {
     // Closing the captured tab ends the track, and the recorder stops by itself
     // - final flush, then `stop` - before rec-stop has been to the worker and
     // back. An onstop set in stopRecording() by then never runs, so listen now.
-    rec.stopped = new Promise((res) => { rec.recorder.onstop = res; });
+    // It resolves with the time the recorder stopped: the end of the recording,
+    // however late the worker's Stop arrives after it.
+    rec.stopped = new Promise((res) => { rec.recorder.onstop = () => res(Date.now()); });
     // Timeslice → periodic dataavailable. Survives an offscreen-doc eviction
     // mid-recording (MV3 may tear it down); without this, a crash loses
     // everything because the only flush is at stop().
     rec.recorder.start(1000);
+    rec.startedAt = Date.now();
     log('MediaRecorder state:', rec.recorder.state);
   }
 }
@@ -212,9 +215,9 @@ function stopRecording(filename) {
     // `chunks` + `recorder` into locals so the closure doesn't deref a
     // nulled `rec`, and (b) keep the stream alive until that final flush
     // completes — track-stopping waits for `stop` too.
-    const { recorder, chunks, stopped } = rec;
-    stopped.then(() => {
-      download(new Blob(chunks, { type: `video/${format}` }), filename);
+    const { recorder, chunks, stopped, startedAt } = rec;
+    stopped.then(async (stoppedAt) => {
+      download(format === 'webm' ? await withDuration(chunks, stoppedAt - startedAt) : new Blob(chunks, { type: `video/${format}` }), filename);
       stream.getTracks().forEach((t) => t.stop());
     });
     // Already inactive if the track ended first: there is nothing left to stop.
@@ -230,6 +233,58 @@ function pickMime(format) {
     ? ['video/mp4;codecs=avc1', 'video/mp4']
     : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
   return types.find((t) => MediaRecorder.isTypeSupported(t)) || `video/${format}`;
+}
+
+// MediaRecorder writes a WebM as it goes and never goes back for its length,
+// so a player reports Infinity until it has read to the end. Chrome's file
+// opens with the EBML header, then a Segment of unknown size whose first child
+// is Info, all in the first chunk, and nothing points past Info - no SeekHead,
+// no Cues - so a Duration can go at the end of Info without moving anything
+// that is referred to. Any other layout is saved as recorded: a file without
+// a duration still plays, and one lost to a parse error doesn't.
+async function withDuration(chunks, ms) {
+  const plain = new Blob(chunks, { type: 'video/webm' });
+  try {
+    const head = new Uint8Array(await chunks[0].arrayBuffer());
+    // An EBML number is one byte longer than its first byte's leading zero
+    // bits. An ID keeps that marker bit; a size drops it, and all ones is unknown.
+    const vint = (at, keepMarker) => {
+      const len = Math.clz32(head[at]) - 23;
+      if (!(len >= 1 && len <= 8) || at + len > head.length) throw new Error(`no EBML number at ${at}`);
+      let value = keepMarker ? head[at] : head[at] & (0xff >> len);
+      for (let i = 1; i < len; i++) value = value * 256 + head[at + i];
+      return { len, value, unknown: !keepMarker && value === 2 ** (7 * len) - 1 };
+    };
+    const element = (at) => {
+      const id = vint(at, true), size = vint(at + id.len, false);
+      return { id: id.value, sizeAt: at + id.len, size, data: at + id.len + size.len };
+    };
+    const ebml = element(0);
+    const segment = element(ebml.data + ebml.size.value);
+    const info = element(segment.data);
+    if (ebml.id !== 0x1a45dfa3 || segment.id !== 0x18538067 || !segment.size.unknown || info.id !== 0x1549a966) throw new Error('not the layout MediaRecorder writes');
+    const end = info.data + info.size.value;
+    let scale = 1e6; // TimecodeScale, in ns: Duration counts in these
+    for (let at = info.data; at < end;) {
+      const child = element(at);
+      if (child.id === 0x4489) return plain; // it has one already
+      if (child.id === 0x2ad7b1) { scale = 0; for (let i = 0; i < child.size.value; i++) scale = scale * 256 + head[child.data + i]; }
+      at = child.data + child.size.value;
+    }
+    const size = info.size.value + 11; // ID 44 89, size 88, an 8-byte float
+    if (end > head.length || size >= 2 ** (7 * info.size.len) - 1) throw new Error('Info does not fit');
+    const out = new Uint8Array(head.length + 11);
+    out.set(head.subarray(0, end));
+    for (let i = info.size.len - 1, v = size; i >= 0; i--, v = Math.floor(v / 256)) out[info.sizeAt + i] = v & 0xff;
+    out[info.sizeAt] |= 0x80 >> (info.size.len - 1);
+    out.set([0x44, 0x89, 0x88], end);
+    new DataView(out.buffer).setFloat64(end + 3, ms * 1e6 / scale);
+    out.set(head.subarray(end), end + 11);
+    return new Blob([out, ...chunks.slice(1)], { type: 'video/webm' });
+  } catch (e) {
+    console.warn('[ViewShot] saving the WebM without a duration:', e);
+    return plain;
+  }
 }
 
 function download(blob, filename) {

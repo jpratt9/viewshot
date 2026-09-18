@@ -494,6 +494,7 @@ function loadOffscreen() {
   const recorders = [];
   const downloads = [];
   const videos = []; // the <video> a GIF start waits on
+  let now = 0; // Date.now() in the document: a recording's length is read off it
   class FakeRecorder {
     constructor(stream, { mimeType } = {}) { this.mimeType = mimeType; this.state = 'recording'; recorders.push(this); }
     start() {}
@@ -536,13 +537,14 @@ function loadOffscreen() {
     },
     setTimeout: (fn) => { timers.push(fn); return 0; }, clearInterval: () => {}, setInterval: () => 0,
     GIF: class {},
+    Date: class extends Date { static now() { return now; } },
   };
   vm.createContext(context);
   vm.runInContext(read('offscreen.js'), context);
   // download() writes through an <a>, so keep each Blob on its way through.
   vm.runInContext('download = ((real) => (blob, name) => { __downloads.push([blob, name]); real(blob, name); })(download);', Object.assign(context, { __downloads: downloads }));
   return {
-    ctx: context, recorders, downloads, videos, sent, asked, endTrack: () => trackListeners.ended(),
+    ctx: context, recorders, downloads, videos, sent, asked, endTrack: () => trackListeners.ended(), tick: (ms) => { now += ms; },
     message: (msg, respond = () => {}) => onMessage(msg, {}, respond),
     runTimers: () => timers.splice(0).forEach((fn) => fn()),
   };
@@ -722,6 +724,104 @@ test('a WebM recording still asks for VP9 and is saved as video/webm', async () 
   await settle();
   assert.strictEqual(o.downloads[0][0].type, 'video/webm');
 });
+
+// --- WebM recordings saved without a duration -------------------------------
+// MediaRecorder streams a WebM out and never writes its length, so a player
+// reported Infinity until it had read the whole file. The save now adds a
+// Duration to the Segment's Info, which Chrome writes into the first chunk.
+
+// The first 168 bytes of a WebM Chrome 153 saved for this extension: the EBML
+// header, a Segment of unknown size, Info (25 bytes, no Duration), Tracks, and
+// the start of the first Cluster.
+const CHROME_WEBM_HEAD = Buffer.from('1a45dfa39f4286810142f7810142f2810442f381084282847765626d42878104428581021853806701ffffffffffffff1549a966992ad7b1830f42404d80864368726f6d655741864368726f6d651654ae6bbeaebcd7810173c587ffdc76db8e00f983810155ee81018685565f565039e09fb08204feba8202c853c0810155b09055b1810155b9810155ba810155bb81011f43b67501ffffffffffffffe78100a34e518100008082', 'hex');
+const INFO_END = 0x4e; // where Info ends in it, and Tracks begins
+// A small Buffer is a view into Node's shared pool, so hand out a copy.
+const webmChunk = (bytes) => ({ size: bytes.length, arrayBuffer: async () => new Uint8Array(bytes).buffer });
+
+test('a WebM recording is saved with its duration', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const r = o.recorders[0];
+  o.tick(1850);
+  const rest = { size: 5 };
+  r.flush(webmChunk(CHROME_WEBM_HEAD));
+  r.flush(rest);
+  o.ctx.stopRecording('out.webm');
+  r.finish();
+  await settle();
+  assert.strictEqual(o.downloads.length, 1, 'the recording was never saved');
+  const [blob] = o.downloads[0];
+  assert.strictEqual(blob.type, 'video/webm');
+  assert.strictEqual(blob.parts.length, 2);
+  assert.strictEqual(blob.parts[1], rest, 'a later chunk was changed');
+  const out = Buffer.from(blob.parts[0]); // a Uint8Array from the vm's realm
+  assert.strictEqual(out.length, CHROME_WEBM_HEAD.length + 11);
+  assert.deepStrictEqual([...out.subarray(0, 0x34)], [...CHROME_WEBM_HEAD.subarray(0, 0x34)]);
+  assert.strictEqual(out[0x34], 0xa4, 'Info\'s size was not raised from 25 to 36');
+  assert.deepStrictEqual([...out.subarray(0x35, INFO_END)], [...CHROME_WEBM_HEAD.subarray(0x35, INFO_END)]);
+  assert.deepStrictEqual([...out.subarray(INFO_END, INFO_END + 3)], [0x44, 0x89, 0x88], 'no Duration at the end of Info');
+  assert.strictEqual(out.readDoubleBE(INFO_END + 3), 1850);
+  assert.deepStrictEqual([...out.subarray(INFO_END + 11)], [...CHROME_WEBM_HEAD.subarray(INFO_END)], 'the rest of the chunk did not move over intact');
+});
+
+// Closing the recorded tab stops the recorder at once, but the worker's Stop
+// only arrives after its round trip: the recording ended at the first.
+test('a WebM whose tab was closed ends where its recorder stopped', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const r = o.recorders[0];
+  o.tick(1735);
+  r.flush(webmChunk(CHROME_WEBM_HEAD));
+  o.endTrack();
+  r.state = 'inactive';
+  r.flush({ size: 7 });
+  r.finish();
+  o.tick(700); // rec-stop to the worker, and rec-stop-offscreen back
+  o.ctx.stopRecording('out.webm');
+  await settle();
+  assert.strictEqual(o.downloads.length, 1, 'the recording was never saved');
+  assert.strictEqual(Buffer.from(o.downloads[0][0].parts[0]).readDoubleBE(INFO_END + 3), 1735);
+});
+
+test('a WebM whose header isn\'t MediaRecorder\'s is saved as recorded', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  const r = o.recorders[0];
+  const chunk = webmChunk(Buffer.from([1, 2, 3, 4]));
+  r.flush(chunk);
+  o.ctx.stopRecording('out.webm');
+  r.finish();
+  await settle();
+  assert.strictEqual(o.downloads.length, 1, 'a header it couldn\'t read lost the recording');
+  const [blob] = o.downloads[0];
+  assert.strictEqual(blob.type, 'video/webm');
+  assert.strictEqual(blob.parts.length, 1);
+  assert.strictEqual(blob.parts[0], chunk);
+});
+
+// Headers a Duration can't safely go into. A Segment of known size would need
+// its own size raised too, a second Duration would contradict the first, and
+// an Info too big for its one-byte size field can't grow in place.
+const headerWith = (...parts) => Buffer.concat(parts.map((p) => Buffer.from(p)));
+for (const [name, bytes] of [
+  ['its Segment has a known size', headerWith(CHROME_WEBM_HEAD.subarray(0, 0x28), [0x01, 0, 0, 0, 0, 0, 0x10, 0], CHROME_WEBM_HEAD.subarray(0x30))],
+  ['it already has a Duration', headerWith(CHROME_WEBM_HEAD.subarray(0, 0x34), [0xa4], CHROME_WEBM_HEAD.subarray(0x35, INFO_END), [0x44, 0x89, 0x88, 0x40, 0x9c, 0xe8, 0, 0, 0, 0, 0], CHROME_WEBM_HEAD.subarray(INFO_END))],
+  ['its Info can\'t grow within its size field', headerWith(CHROME_WEBM_HEAD.subarray(0, 0x34), [0xf7], CHROME_WEBM_HEAD.subarray(0x35, 0x45), [0x57, 0x41, 0xe4], Buffer.alloc(100, 0x78), CHROME_WEBM_HEAD.subarray(INFO_END))],
+]) {
+  test(`a WebM is saved as recorded when ${name}`, async () => {
+    const o = loadOffscreen();
+    await o.ctx.startRecording('sid', 'webm', 100, 100);
+    const r = o.recorders[0];
+    o.tick(1000);
+    const chunk = webmChunk(bytes);
+    r.flush(chunk);
+    o.ctx.stopRecording('out.webm');
+    r.finish();
+    await settle();
+    assert.strictEqual(o.downloads.length, 1, 'the recording was never saved');
+    assert.strictEqual(o.downloads[0][0].parts[0], chunk, 'the header was rewritten');
+  });
+}
 
 // --- the worker's own active-tab lookup coming back empty ------------------
 // The popup and the shortcuts knew which tab they meant but never said, so the
