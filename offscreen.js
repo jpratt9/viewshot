@@ -203,8 +203,23 @@ function stopRecording(filename) {
 
   if (format === 'gif') {
     if (rec.timer) clearInterval(rec.timer);
-    rec.gif.on('finished', (blob) => download(blob, filename));
-    rec.gif.render();
+    let progressTimer;
+    const gif = rec.gif;
+    const onHang = () => { gif.abort(); };
+    const resetTimer = () => { clearTimeout(progressTimer); progressTimer = setTimeout(onHang, 30000); };
+    gif.on('start', resetTimer);
+    gif.on('progress', resetTimer);
+    gif.on('abort', () => {
+      clearTimeout(progressTimer);
+      saving--;
+      onRecError(new Error('GIF encoding timed out or aborted'));
+    });
+    gif.on('finished', (blob) => {
+      clearTimeout(progressTimer);
+      download(blob, filename);
+    });
+    resetTimer();
+    gif.render();
     // GIF frames are already captured into the worker, so the stream is no
     // longer needed and `rec` can be cleared synchronously here.
     stream.getTracks().forEach((t) => t.stop());

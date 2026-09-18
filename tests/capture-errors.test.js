@@ -535,7 +535,7 @@ function loadOffscreen() {
       },
       body: { appendChild() {} },
     },
-    setTimeout: (fn) => { timers.push(fn); return 0; }, clearInterval: () => {}, setInterval: () => 0,
+    setTimeout: (fn) => { timers.push(fn); return 0; }, clearInterval: () => {}, setInterval: () => 0, clearTimeout: () => {},
     GIF: class {},
     Date: class extends Date { static now() { return now; } },
   };
@@ -600,7 +600,7 @@ test('an error from a normally stopped recorder leaves its save and replacement 
   first.finish();
   await settle();
   assert.strictEqual(o.downloads.length, 1);
-  o.runTimers();
+  console.log('Running timers...', o.ctx.timers); console.log('Running timers...', o.ctx.timers); console.log('Running timers...', o.ctx.timers); console.log('Running timers...', o.ctx.timers); console.log('Running timers...', o.ctx.timers); o.runTimers();
   assert.strictEqual(busy(o), false);
   await o.ctx.startRecording('sid2', 'webm', 100, 100);
   first.fail(new Error('another late error'));
@@ -1965,4 +1965,28 @@ test('a cosmetic script that never answers does not hold up the shot', async () 
   for (let i = 0; i < 4; i++) { bg.expire(); await settle(); } // the cancel and the scrollbar hide
   assert.strictEqual(bg.shots.length, 1, 'the scrollbar hide held the shot up for good');
   assert.deepStrictEqual(bg.badges, [], 'flashed for a script whose failure is ignored');
+});
+
+test('a hanging GIF encode is aborted after 30 seconds', async () => {
+  const o = loadOffscreen();
+  let aborted = false;
+  const listeners = {};
+  const gif = {
+    on: (event, fn) => { listeners[event] = fn; },
+    render: () => {},
+    abort: () => { aborted = true; if (listeners.abort) listeners.abort(); }
+  };
+  vm.runInContext("rec = { format: 'gif', gif: __gif, stream: { getTracks: () => [] } }", Object.assign(o.ctx, { __gif: gif }));
+  o.ctx.stopRecording('out.gif');
+  // At this point, the timeout is started. Run timers for 30 seconds.
+  assert.strictEqual(busy(o), true, 'the document should be busy encoding');
+  // Fast-forward time
+  o.tick(30000);
+  o.runTimers();
+  // We need to trigger the abort callback manually since our mock gif.abort just sets a flag.
+  // Wait, our mock gif.abort() sets aborted = true. The production code calls gif.abort().
+  // We can just verify `aborted` is true. We should also invoke the 'abort' event callback
+  // since a real gif.js web worker would do that when terminated.
+  assert.strictEqual(aborted, true, 'the GIF encoder was aborted');
+  assert.strictEqual(busy(o), false, 'the document was released after abort');
 });
