@@ -665,6 +665,7 @@ async function markFixedAndSticky(tab, doFixed, fixedFirst, stickyFirst) {
       const fixedList = fixedFirst ? [] : window.__shotHidden || [];
       const stickyListed = stickyFirst ? [] : window.__shotSticky || [];
       
+      let fixedReshot = false;
       const roots = [document];
       while (roots.length) {
         for (const el of roots.pop().querySelectorAll('*')) {
@@ -672,18 +673,22 @@ async function markFixedAndSticky(tab, doFixed, fixedFirst, stickyFirst) {
           if (shadow) roots.push(shadow);
           
           const pos = getComputedStyle(el).position;
-          if (doFixed && pos === 'fixed' && !fixedList.some(([e]) => e === el)) {
-            fixedAdded.push([el, el.style.visibility]);
-            el.style.visibility = 'hidden';
+          if (doFixed && pos === 'fixed') {
+            if (!fixedList.some(([e]) => e === el)) {
+              fixedAdded.push([el, el.style.visibility]);
+              fixedReshot = true;
+            }
+            if (el.style.visibility !== 'hidden') {
+              el.style.visibility = 'hidden';
+              fixedReshot = true;
+            }
           }
           if (pos === 'sticky') stickyList.push(el);
         }
       }
       
-      let fixedReshot = false;
       if (doFixed) {
         window.__shotHidden = [...fixedList, ...fixedAdded];
-        fixedReshot = fixedAdded.length > 0;
       }
       
       const slotOf = (n) => {
