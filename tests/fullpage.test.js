@@ -472,7 +472,7 @@ test('turns scroll anchoring on while the page is shot, and back off after', asy
   const rules = [];
   ctx.chrome.tabs.captureVisibleTab = async (...a) => { rules.push(styles.get('__vsAnchor')?.textContent); return shoot(...a); };
   await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(rules, Array(4).fill('@layer{*{overflow-anchor:auto!important}}'), 'shot a slice without the rule');
+  assert.deepStrictEqual(rules, Array(4).fill('@layer{*{overflow-anchor:auto!important;scroll-snap-type:none!important}}'), 'shot a slice without the rule');
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
@@ -553,6 +553,35 @@ test("puts back the page's own inline anchoring a capture that died left on", as
   ctx.window.__vsAnchored = [[htmlEl, 'none']];
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(inlineAnchor(htmlEl), ['none', 'important'], "left the page's own inline anchoring on");
+});
+
+// --- pages with scroll snapping --------------------------------------------
+// A page with `scroll-snap-type` lands each of the capture's scrolls on one of
+// its snap points, not where the slice asked. Each slice was drawn where it
+// landed, but the next one still asked for one screen past the last one's
+// target, so where the snap points pulled two slices apart, the rows between
+// them were never shot. Snapping is now off while the page is shot, in the
+// anchoring rule (KAN-600).
+
+test('turns scroll snapping off while the page is shot', async () => {
+  // Snap points every 500 px: a scroll lands on the nearest one, unless the
+  // capture's rule turns snapping off. The one at 2500 is past the end, so it
+  // snaps to the end, 2287.
+  const snaps = [0, 500, 1000, 1500, 2000, 2287];
+  let styles;
+  const body = el(3000, 713);
+  const scroll = body.scrollTo;
+  body.scrollTo = function (o) {
+    const off = (styles.get('__vsAnchor')?.textContent || '').includes('scroll-snap-type:none!important');
+    const top = off ? o.top : snaps.reduce((a, b) => (Math.abs(b - o.top) < Math.abs(a - o.top) ? b : a));
+    scroll.call(this, { ...o, top });
+  };
+  const page = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  styles = page.styles;
+  await page.ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(page.captureAt, [0, 713, 1426, 2139, 2287], 'shot the slices where the snap points pulled them');
+  assert.deepStrictEqual(page.canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
+  assert.strictEqual(page.canvases[page.canvases.length - 1].height, 3000, 'cut the image short');
 });
 
 // --- a stitch that stops part-way ------------------------------------------

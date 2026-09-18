@@ -332,10 +332,14 @@ function measurePage() {
   // `!important` outside one, whatever its selector (KAN-581). It goes first in
   // <head>: between layers, the first one declared wins for `!important`, so it
   // comes before any layer the page declares (KAN-582).
+  // Scroll snapping is off in the same rule: a page that snaps lands the
+  // capture's scrolls on its snap points, not where the slices ask, and the
+  // rows between two slices the snap points pulled apart were never shot
+  // (KAN-600).
   if (!document.getElementById('__vsAnchor')) {
     const style = document.createElement('style');
     style.id = '__vsAnchor';
-    style.textContent = '@layer{*{overflow-anchor:auto!important}}';
+    style.textContent = '@layer{*{overflow-anchor:auto!important;scroll-snap-type:none!important}}';
     (document.head || document.documentElement).prepend(style);
   }
   // A page's own `!important` in a style attribute outranks every style sheet
