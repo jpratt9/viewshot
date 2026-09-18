@@ -281,28 +281,51 @@ async function encode(pngDataUrl, opts) {
 // can't share a helper and each repeats the same three-line pick.
 function measurePage() {
   const de = document.documentElement, b = document.body;
-  const el = de.scrollHeight > de.clientHeight + 1 ? de
-           : (b && b.scrollHeight > b.clientHeight + 1) ? b
-           : (document.scrollingElement || de);
+  let el = de.scrollHeight > de.clientHeight + 1 ? de
+         : (b && b.scrollHeight > b.clientHeight + 1) ? b
+         : null;
+  if (!el) {
+    for (const node of document.querySelectorAll('*')) {
+      if (node.scrollHeight > node.clientHeight + 1) {
+        const style = window.getComputedStyle(node);
+        if (style.overflowY === 'auto' || style.overflowY === 'scroll') { el = node; break; }
+      }
+    }
+  }
+  el = el || document.scrollingElement || de;
+  const isRoot = el === de || el === b || el === document.scrollingElement;
+  const rect = isRoot ? null : el.getBoundingClientRect();
   return {
     total: el.scrollHeight,
-    vh: window.innerHeight,
+    vh: isRoot ? window.innerHeight : Math.min(el.clientHeight, window.innerHeight),
     vw: window.innerWidth,
+    winH: window.innerHeight,
     dpr: window.devicePixelRatio || 1,
     prevY: el.scrollTop,
+    rect: rect ? { top: rect.top, bottom: rect.bottom, height: rect.height } : null
   };
 }
 
 function scrollAndReport(to) {
   const de = document.documentElement, b = document.body;
-  const el = de.scrollHeight > de.clientHeight + 1 ? de
-           : (b && b.scrollHeight > b.clientHeight + 1) ? b
-           : (document.scrollingElement || de);
+  let el = de.scrollHeight > de.clientHeight + 1 ? de
+         : (b && b.scrollHeight > b.clientHeight + 1) ? b
+         : null;
+  if (!el) {
+    for (const node of document.querySelectorAll('*')) {
+      if (node.scrollHeight > node.clientHeight + 1) {
+        const style = window.getComputedStyle(node);
+        if (style.overflowY === 'auto' || style.overflowY === 'scroll') { el = node; break; }
+      }
+    }
+  }
+  el = el || document.scrollingElement || de;
+  const isRoot = el === de || el === b || el === document.scrollingElement;
   // 'instant' overrides a page's `scroll-behavior: smooth` (Bootstrap 5,
   // Tailwind's scroll-smooth). Without it the scroll animates, the read below
   // still sees the old offset, and the stitch stops after the first screen.
   el.scrollTo({ top: to, behavior: 'instant' });
-  window.scrollTo({ left: 0, top: to, behavior: 'instant' }); // no-op unless the document itself is the scroller
+  if (isRoot) window.scrollTo({ left: 0, top: to, behavior: 'instant' }); // no-op unless the document itself is the scroller
   return el.scrollTop;
 }
 
@@ -349,7 +372,11 @@ async function captureFullPage(tab, format) {
     func: measurePage,
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
 
-  const w = Math.round(m.vw * m.dpr), h = Math.round(m.total * m.dpr);
+  const w = Math.round(m.vw * m.dpr);
+  const footerH = m.rect ? Math.max(0, m.winH - m.rect.bottom) : 0;
+  const headerH = m.rect ? Math.max(0, m.rect.top) : 0;
+  const pageHeight = m.rect ? headerH + m.total + footerH : m.total;
+  const h = Math.round(pageHeight * m.dpr);
   const side = MAX_SIDE[format] || MAX_SIDE.png; // a recording format is saved as PNG
   const scale = Math.min(1, side / w, side / h, Math.sqrt(MAX_AREA / (w * h)));
   const canvas = new OffscreenCanvas(Math.floor(w * scale), Math.floor(h * scale));
@@ -405,8 +432,28 @@ async function captureFullPage(tab, format) {
       if (!now.active || now.windowId !== tab.windowId) throw new Error('Full page stopped: another tab is now showing');
       const bmp = await createImageBitmap(await (await fetch(url)).blob());
       // Whole rows at each end, so scaled slices meet without a seam.
-      const top = Math.round(actual * m.dpr * scale);
-      ctx.drawImage(bmp, 0, top, Math.round(bmp.width * scale), Math.round((actual * m.dpr + bmp.height) * scale) - top); // where it really is, not where we asked
+      if (m.rect) {
+        if (i === 0) {
+          const drawHeaderH = Math.round(Math.max(0, m.rect.top) * m.dpr);
+          if (drawHeaderH > 0) {
+            ctx.drawImage(bmp, 0, 0, bmp.width, drawHeaderH, 0, 0, Math.round(bmp.width * scale), Math.round(drawHeaderH * scale));
+          }
+          const footerTop = Math.round(Math.min(m.winH, m.rect.bottom) * m.dpr);
+          const drawFooterH = Math.max(0, bmp.height - footerTop);
+          if (drawFooterH > 0) {
+            const drawFooterTop = Math.round((Math.max(0, m.rect.top) + m.total) * m.dpr * scale);
+            ctx.drawImage(bmp, 0, footerTop, bmp.width, drawFooterH, 0, drawFooterTop, Math.round(bmp.width * scale), Math.round(drawFooterH * scale));
+          }
+        }
+        const sliceTop = Math.round(Math.max(0, m.rect.top) * m.dpr);
+        const sliceBottom = Math.round(Math.min(m.winH, m.rect.bottom) * m.dpr);
+        const sliceH = Math.max(0, sliceBottom - sliceTop);
+        const drawTop = Math.round((Math.max(0, m.rect.top) + actual) * m.dpr * scale);
+        ctx.drawImage(bmp, 0, sliceTop, bmp.width, sliceH, 0, drawTop, Math.round(bmp.width * scale), Math.round((Math.max(0, m.rect.top) + actual) * m.dpr * scale + sliceH * scale) - drawTop);
+      } else {
+        const top = Math.round(actual * m.dpr * scale);
+        ctx.drawImage(bmp, 0, top, Math.round(bmp.width * scale), Math.round((actual * m.dpr + bmp.height) * scale) - top); // where it really is, not where we asked
+      }
     }
   } finally {
     if (hid) await setFixedHidden(tab, false); // restore
@@ -415,7 +462,9 @@ async function captureFullPage(tab, format) {
 
   // Trim to what was actually stitched, so an early stop yields a short correct
   // image instead of a tall one padded with blank space.
-  const filled = Math.min(canvas.height, Math.round((landed + m.vh) * m.dpr * scale));
+  const filled = m.rect
+    ? Math.min(canvas.height, Math.round((Math.max(0, m.rect.top) + landed + m.vh + Math.max(0, m.winH - m.rect.bottom)) * m.dpr * scale))
+    : Math.min(canvas.height, Math.round((landed + m.vh) * m.dpr * scale));
   let out = canvas;
   if (filled > 0 && filled < canvas.height) {
     out = new OffscreenCanvas(canvas.width, filled);
