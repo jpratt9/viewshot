@@ -262,10 +262,16 @@ Two files change: `background.js` and `tests/fullpage.test.js`. Both diffs were 
 
 **Chrome:** see the tables under "What the repo does now".
 
-## Open questions
+## Open questions — settled
 
-1. **Should pages that turn scroll anchoring off (`overflow-anchor: none`) be covered too?**
-   - On those pages, content above the screen moves the rows on screen and leaves the offset alone. `from` doesn't change, and this plan leaves their stitch as it is today (`grow-noanchor` above).
-   - The ticket doesn't say whether they count. Covering them would need one of two approaches, and the ticket doesn't choose between them:
-     - Force anchoring on for the capture, with a `* { overflow-anchor: auto !important }` rule injected like the scrollbar style. This changes how the page itself behaves while it is shot.
-     - Read one element's place in the page on every slice. That is a new page pass.
+The plan left one question open. It is settled here, and it doesn't change the code shipped in `5d5f178`.
+
+1. **Should pages that turn scroll anchoring off (`overflow-anchor: none`) be covered too?** Not as part of KAN-515.
+   - The ticket is about content above the viewport that changes height between one slice and the next, "for example because an image loads in".
+   - On a page that leaves Chrome's scroll anchoring on, as pages do by default, that moves the offset. `5d5f178` lines those slices up: see the `grow` and `shrink` runs above.
+   - A page that turns anchoring off moves the rows on screen and leaves the offset alone, so `from` shows nothing. Covering it needs a different mechanism, and either one found while planning has a cost of its own:
+     - forcing anchoring on for the capture changes how the page itself behaves while it is shot;
+     - reading an element's place on every slice is a new page pass.
+   - That is KAN-575, filed from this question.
+   - KAN-576, filed from the choice above about a page that scrolls itself between slices, is the other follow-up.
+   - This ticket blocks both.
