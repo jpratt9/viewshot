@@ -71,6 +71,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   let onMessage; // background.js's chrome.runtime.onMessage listener
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   let pageScriptTimeout; // CAPTURE_SCRIPT_TIMEOUT_MS, likewise
+  const styles = new Map(); // the <style> elements the capture puts in the page, by id
   const context = {
     console,
     URL, btoa, Date, clearTimeout,
@@ -79,7 +80,12 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
     HTMLElement,
     // light: what document.querySelectorAll finds, which is all of `fixed`
     // unless a test puts some of them in a shadow root and passes its host.
-    document: { documentElement: de, body, scrollingElement: de, querySelectorAll: () => light },
+    document: {
+      documentElement: de, body, scrollingElement: de, querySelectorAll: () => light,
+      getElementById: (id) => styles.get(id) || null,
+      createElement: () => ({ remove() { styles.delete(this.id); } }),
+      head: { appendChild: (s) => styles.set(s.id, s) },
+    },
     // A window that is drawing runs the callback; from frozenAt on it never does.
     // The probe for slice k runs before capture k, so captureAt is one short.
     requestAnimationFrame: (cb) => { if (!frozenAt || captureAt.length < frozenAt - 1) cb(); },
@@ -134,7 +140,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   vm.runInContext(CODE, context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
-  return { ctx: context, canvases, scriptCalls, captureAt, shownAt, sent, message: (m) => onMessage(m, {}, () => {}) };
+  return { ctx: context, canvases, scriptCalls, captureAt, shownAt, sent, styles, message: (m) => onMessage(m, {}, () => {}) };
 }
 
 const TAB = { id: 1, windowId: 9 };
@@ -372,6 +378,56 @@ test('stops after one slice when a scroll comes back with nothing', async () => 
   };
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0], 'went on past a scroll that came back with nothing');
+});
+
+// --- pages that turn scroll anchoring off ----------------------------------
+// The stitch sees content above the screen change height by how far scroll
+// anchoring moves the offset (KAN-515). A page with `overflow-anchor: none`
+// moves the rows on screen instead, so the slices after it were drawn off from
+// the ones before. Anchoring is now on for every element while the page is
+// shot, with a rule put in the way the scrollbar one is (KAN-575).
+
+test('turns scroll anchoring on while the page is shot, and back off after', async () => {
+  const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  const rules = [];
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => { rules.push(styles.get('__vsAnchor')?.textContent); return shoot(...a); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(rules, Array(4).fill('*{overflow-anchor:auto!important}'), 'shot a slice without the rule');
+  assert.strictEqual(styles.size, 0, 'left the rule in the page');
+});
+
+test('takes the anchoring rule back out when a slice fails', async () => {
+  const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1, failAt: 2 });
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  let shotWith;
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => { shotWith = styles.has('__vsAnchor'); return shoot(...a); };
+  await assert.rejects(ctx.captureFullPage(TAB));
+  assert.ok(shotWith, 'shot the slice that failed without the rule');
+  assert.strictEqual(styles.size, 0, 'left the rule in the page');
+});
+
+test('uses the anchoring rule a capture that died left behind, and takes it out', async () => {
+  const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  const left = { id: '__vsAnchor', textContent: '*{overflow-anchor:auto!important}', remove() { styles.delete(this.id); } };
+  styles.set(left.id, left);
+  const add = ctx.document.head.appendChild;
+  let added = 0;
+  ctx.document.head.appendChild = (s) => { added++; return add(s); };
+  await ctx.captureFullPage(TAB);
+  assert.strictEqual(added, 0, 'put a second rule in');
+  assert.strictEqual(styles.size, 0, 'left the rule in the page');
+});
+
+test('puts the anchoring rule on the root element of a page with no <head>', async () => {
+  const de = el(3000, 800);
+  const { ctx, styles } = load({ de, body: el(3000, 3000), ih: 800, dpr: 1 });
+  ctx.document.head = null;
+  const inRoot = [];
+  de.appendChild = (s) => { inRoot.push(s.id); styles.set(s.id, s); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(inRoot, ['__vsAnchor'], 'did not put the rule on the root element');
+  assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
 // --- a stitch that stops part-way ------------------------------------------

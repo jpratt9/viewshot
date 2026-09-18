@@ -325,6 +325,15 @@ async function encode(pngDataUrl, opts) {
 // These two run in the page. executeScript serializes them standalone, so they
 // can't share a helper and each repeats the same three-line pick.
 function measurePage() {
+  // Scroll anchoring on for the capture, over a page's own `overflow-anchor:
+  // none`: content above the screen that changes height then moves the offset,
+  // which is how the stitch sees it (KAN-575). The cleanup scroll takes it out.
+  if (!document.getElementById('__vsAnchor')) {
+    const style = document.createElement('style');
+    style.id = '__vsAnchor';
+    style.textContent = '*{overflow-anchor:auto!important}';
+    (document.head || document.documentElement).appendChild(style);
+  }
   const de = document.documentElement, b = document.body;
   let el = de.scrollHeight > de.clientHeight + 1 ? de
          : (b && b.scrollHeight > b.clientHeight + 1) ? b
@@ -369,7 +378,7 @@ function scrollAndReport(to, cleanup, fromHere) {
     }
     el = el || document.scrollingElement || de;
   }
-  if (cleanup) delete window.__vsScroller;
+  if (cleanup) { delete window.__vsScroller; document.getElementById('__vsAnchor')?.remove(); }
   const isRoot = el === de || el === b || el === document.scrollingElement;
   // Where the page is before it moves. fromHere scrolls `to` on from there.
   const from = el.scrollTop;

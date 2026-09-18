@@ -23,7 +23,7 @@ function load({ body, inner, iw = 1512, ih = 767, dpr = 2 }) {
   let pageScriptTimeout;
   const context = {
     console, URL, btoa, Date, clearTimeout, setTimeout: (fn, ms) => { if (ms !== captureTimeout && ms !== pageScriptTimeout) fn(); }, HTMLElement,
-    document: { documentElement: body, body, scrollingElement: body, querySelectorAll: () => (inner ? [inner] : []) },
+    document: { documentElement: body, body, scrollingElement: body, querySelectorAll: () => (inner ? [inner] : []), getElementById: () => null, createElement: () => ({}), head: { appendChild() {} } },
     requestAnimationFrame: (cb) => { cb(); },
     getComputedStyle: (e) => ({ position: 'static', overflow: 'visible', overflowY: e === inner ? 'auto' : 'visible' }),
     window: { innerWidth: iw, innerHeight: ih, devicePixelRatio: dpr, scrollTo: (x, y) => { if (body) body.scrollTo(typeof x === 'object' ? x : { left: x, top: y }); }, getComputedStyle: (e) => ({ position: 'static', overflow: 'visible', overflowY: e === inner ? 'auto' : 'visible' }) },
