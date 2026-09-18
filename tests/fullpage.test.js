@@ -650,11 +650,11 @@ test('runs no sticky pass on a page that fits one screen', async () => {
   assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'reportFrame', 'scrollAndReport'], 'ran the sticky passes on a page with one slice');
 });
 
-test('hides fixed elements before and after the settle on every slice but the first, and lists and checks sticky ones before and after the settle on every slice', async () => {
+test('hides fixed elements before and after the settle and after the shot on every slice but the first, and lists and checks sticky ones before and after the settle on every slice', async () => {
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(3052, 767) });
   await ctx.captureFullPage(TAB);
-  // the fixed hide twice on each of the three slices after the first, the restore once, and the sticky listing and check twice on each of the four slices
-  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 23, 'the fixed hide ran on the first slice or missed a later one or its settle, or a slice or its settle went unlisted or unchecked');
+  // the fixed hide three times on each of the three slices after the first, the restore once, and the sticky listing and check twice on each of the four slices
+  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 26, 'the fixed hide ran on the first slice or missed a later one, its settle or its shot, or a slice or its settle went unlisted or unchecked');
 });
 
 // --- fixed elements that turn up after the second slice ---------------------
@@ -746,8 +746,120 @@ test('asks for a frame only after the passes that follow the settle', async () =
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(1534, 767) }); // two slices
   await ctx.captureFullPage(TAB);
   // the first slice: the sticky listing and check, both again once it has settled, and then the frame;
-  // the second: the sticky listing, the fixed hide and the sticky check, all three again once it has settled, and then the frame
-  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'func', 'func', 'reportFrame', 'scrollAndReport', 'func', 'func', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'scrollAndReport'], 'asked for the frame before a pass that follows the settle');
+  // the second: the sticky listing, the fixed hide and the sticky check, all three again once it has settled, the frame, and the fixed hide after the shot
+  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'func', 'func', 'reportFrame', 'scrollAndReport', 'func', 'func', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'func', 'scrollAndReport'], 'asked for the frame before a pass that follows the settle');
+});
+
+// --- fixed elements that turn up after a slice's last fixed hide ------------
+// The fixed hide that follows the settle was the last one before the shot. A
+// fixed element the page put in, or pinned, after it was stitched into that
+// slice at its spot on the screen, and hidden only from the next slice on. And
+// the frame check answered from requestAnimationFrame, which runs before its
+// frame is painted, so the shot could still show an element that hide took out
+// (KAN-525). A fixed hide now runs after the shot too, and one it finds sends
+// the slice back to settle and be shot again, once. The frame check answers
+// from the frame after the one it asks for.
+
+test('shoots a slice again when a fixed element turns up between its last fixed hide and its shot', async () => {
+  // A banner the page puts in from a frame callback of its own, in the frame
+  // the second slice's frame check asks for: after that slice's last fixed
+  // hide, and before its shot.
+  const body = el(3000, 713);
+  const banner = positioned('fixed', 663, 713);
+  const light = []; // what the page has in it
+  const { ctx, captureAt, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [banner], light });
+  const frame = ctx.requestAnimationFrame;
+  ctx.requestAnimationFrame = (cb) => { if (body.scrollTop === 713 && !light.length) light.push(banner); return frame(cb); };
+  // Which shots the stitch draws: each one's URL carries its number.
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => `${await shoot(...a)}#${captureAt.length}`;
+  const drawn = [];
+  const get = ctx.fetch;
+  ctx.fetch = (url) => { drawn.push(Number(url.split('#')[1])); return get(url); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(drawn, [1, 3, 4, 5, 6], 'the banner was stitched into the slice it turned up in');
+  assert.deepStrictEqual(captureAt, [0, 713, 713, 1426, 2139, 2287]);
+  // Not in the page for the first slice, in the second slice's first shot, and hidden in its second shot and the three slices after.
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', 'hidden', 'hidden', 'hidden', 'hidden']);
+  assert.strictEqual(banner.style.visibility, '', 'left the banner hidden');
+});
+
+test('shoots a slice again when the page makes an element fixed between its last fixed hide and its shot', async () => {
+  // A header the page pins to the viewport in the frame the second slice's
+  // frame check asks for: that slice's last fixed hide still read it as static.
+  const body = el(3000, 713);
+  const header = positioned('fixed', 0, 60);
+  let pinned = false;
+  Object.defineProperty(header, 'pos', { get: () => (pinned ? 'fixed' : 'static') });
+  const { ctx, captureAt, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [header] });
+  const frame = ctx.requestAnimationFrame;
+  ctx.requestAnimationFrame = (cb) => { if (body.scrollTop === 713) pinned = true; return frame(cb); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', 'hidden', 'hidden', 'hidden', 'hidden'], 'the header was stitched into the slice it was pinned in');
+  assert.deepStrictEqual(captureAt, [0, 713, 713, 1426, 2139, 2287]);
+  assert.strictEqual(header.style.visibility, '', 'left the header hidden');
+});
+
+test('settles again and runs the passes that follow the settle before it shoots a slice again', async () => {
+  // A second shot straight after the first would wait out the rest of the
+  // capture rate limit after its passes, and give the page that long to put
+  // in another one.
+  const body = el(1534, 767); // two slices
+  const banner = positioned('fixed', 700, 767);
+  const light = [];
+  const { ctx, scriptCalls } = load({ de: el(767, 767), body, fixed: [banner], light });
+  const frame = ctx.requestAnimationFrame;
+  ctx.requestAnimationFrame = (cb) => { if (body.scrollTop === 767 && !light.length) light.push(banner); return frame(cb); };
+  const timer = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms) => { if (ms === 500) scriptCalls.push('settle'); return timer(fn, ms); };
+  await ctx.captureFullPage(TAB);
+  // the second slice: the sticky listing, the fixed hide and the sticky check, the settle, all three again, the frame, and the fixed hide after the shot, which finds the banner;
+  // then the settle, the three passes that follow it and the frame again, and no fixed hide after the second shot
+  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'settle', 'func', 'func', 'reportFrame', 'scrollAndReport', 'func', 'func', 'func', 'settle', 'func', 'func', 'func', 'reportFrame', 'func', 'settle', 'func', 'func', 'func', 'reportFrame', 'func', 'scrollAndReport'], 'shot the slice again before it settled and ran the passes that follow the settle, or checked after its second shot');
+});
+
+test('shoots a slice twice at most, however many fixed elements the page puts in', async () => {
+  // A page that puts in another fixed banner at every shot after the first
+  // slice's, after the slice's last fixed hide every time.
+  const body = el(3000, 713);
+  const banners = Array.from({ length: 10 }, () => positioned('fixed', 663, 713));
+  const light = [];
+  const { ctx, captureAt } = load({ de: el(713, 713), body, ih: 713, fixed: banners, light });
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  ctx.chrome.tabs.captureVisibleTab = (...a) => { if (body.scrollTop > 0) light.push(banners[light.length]); return shoot(...a); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 713, 1426, 1426, 2139, 2139, 2287, 2287], 'shot a slice more than twice, or only once with a banner in it');
+  assert.ok(banners.every((b) => b.style.visibility === ''), 'left a banner hidden');
+});
+
+test('shoots a slice only once the page has painted the frame its fixed hide is in', async () => {
+  // As in Chrome, a frame's requestAnimationFrame callbacks run before it is
+  // painted, and captureVisibleTab hands back the last frame painted: here a
+  // frame is on the screen once the next one starts, and the settle's frames
+  // leave the page on the screen as it is. The banner turns up while the
+  // second slice settles, so it is on the screen by the end of the settle; the
+  // fixed hide that follows takes it out of the page, but not off the screen.
+  const body = el(3000, 713);
+  const banner = positioned('fixed', 663, 713);
+  const light = [];
+  const { ctx } = load({ de: el(713, 713), body, ih: 713, fixed: [banner], light });
+  const page = () => (light.length ? banner.style.visibility : 'absent');
+  let painted = page(), screen = painted;
+  const timer = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms) => {
+    if (ms === 500) {
+      if (body.scrollTop === 713 && !light.length) light.push(banner);
+      painted = screen = page();
+    }
+    return timer(fn, ms);
+  };
+  const frame = ctx.requestAnimationFrame;
+  ctx.requestAnimationFrame = (cb) => frame(() => { screen = painted; painted = page(); cb(); });
+  const shots = []; // the banner in each shot
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  ctx.chrome.tabs.captureVisibleTab = (...a) => { shots.push(screen); return shoot(...a); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shots, ['absent', 'hidden', 'hidden', 'hidden', 'hidden'], 'shot the second slice before the page painted the frame its fixed hide is in');
 });
 
 // --- fixed and sticky elements inside a shadow root -------------------------

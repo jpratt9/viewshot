@@ -226,9 +226,10 @@ function captureWithTimeout(windowId) {
 // only works for about 10 s: Chrome 152 took one used at 9.2 s and refused one
 // used at 10.3 s. Two 2 s deadlines leave a start, and one queued behind it,
 // time to use theirs.
-// How long the page gets to produce a frame before the stitch gives up on it.
-// A window that is drawing answers in about 16ms; one that isn't never will,
-// and the wait is paid once, on the slice the capture stops at.
+// How long the page gets to produce the two frames reportFrame waits for
+// before the stitch gives up on it. A window that is drawing answers in about
+// 33ms; one that isn't never will, and the wait is paid once, on the slice the
+// capture stops at.
 const FRAME_TIMEOUT_MS = 1000;
 const SCRIPT_TIMEOUT_MS = 2000;
 function scriptWithTimeout(injection, ms = SCRIPT_TIMEOUT_MS) {
@@ -383,9 +384,14 @@ function scrollAndReport(to, cleanup) {
 // instead: timers keep running in a window that isn't presenting, which is what
 // makes them the half of this that can always answer. Runs in the page, so it
 // can't read FRAME_TIMEOUT_MS and is handed it.
+// It answers from the frame after the one it asks for. requestAnimationFrame
+// runs before its frame is painted, so an answer from the first one let the
+// shot beat that frame to the screen, and an element hidden just before the
+// frame check could still be in the shot (KAN-525). By the time the next frame
+// starts, the page has painted the one with the hides in it.
 function reportFrame(ms) {
   return new Promise((resolve) => {
-    requestAnimationFrame(() => resolve(true));
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
     setTimeout(() => resolve(false), ms); // whichever lands first wins; the other is a no-op
   });
 }
@@ -463,30 +469,42 @@ async function captureFullPage(tab, format, popupId) {
       // Sticky ones only in the slices they are stuck in (KAN-403), the first
       // included: a `bottom` one can be stuck there already (KAN-501).
       if (hid) await hideStuckSticky(tab);
-      await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
-      // And the fixed ones the page put in, or pinned, while it settled: the
-      // hide above ran before they were there (KAN-522). It goes before the
-      // frame check, so the frame the shot waits for has this hide in it.
-      if (i > 0) await setFixedHidden(tab, true);
-      // And the sticky ones the page put in, or made sticky, while it settled:
-      // the listing above ran before they were there (KAN-517). The check runs
-      // again for every listed one, before the frame check too.
-      if (hid) { await markSticky(tab, false); await hideStuckSticky(tab); }
-      // captureVisibleTab hands back the last frame the window presented. A
-      // window that isn't drawing - minimized, occluded - presents none, so
-      // every slice comes back as the frame before it. The offsets still
-      // advance and the tab is still the one showing, so neither guard here
-      // catches it, and the stitch drew that one screen at every offset and
-      // saved a tall image that is the same screen over and over, with nothing
-      // to say so. Ask the page for a frame rather than compare the pixels: a
-      // flat stretch of page shoots the same bytes twice while drawing fine.
-      if (!await pageIsDrawing(tab)) throw new Error('Full page stopped: the window is not drawing (minimized?)');
-      const url = await captureVisible(tab.windowId);
-      // captureVisibleTab shoots whichever tab is showing in the window. If the
-      // user switched tabs (or moved this one out) mid-stitch, this slice is
-      // another tab: stop rather than stitch it in.
-      const now = await chrome.tabs.get(tab.id);
-      if (!now.active || now.windowId !== tab.windowId) throw new Error('Full page stopped: another tab is now showing');
+      // A slice can be shot twice: see the fixed hide after the shot (KAN-525).
+      let url;
+      for (let shot = 1; ; shot++) {
+        await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
+        // And the fixed ones the page put in, or pinned, while it settled: the
+        // hide above ran before they were there (KAN-522). It goes before the
+        // frame check, so the frame the shot waits for has this hide in it.
+        if (i > 0) await setFixedHidden(tab, true);
+        // And the sticky ones the page put in, or made sticky, while it settled:
+        // the listing above ran before they were there (KAN-517). The check runs
+        // again for every listed one, before the frame check too.
+        if (hid) { await markSticky(tab, false); await hideStuckSticky(tab); }
+        // captureVisibleTab hands back the last frame the window presented. A
+        // window that isn't drawing - minimized, occluded - presents none, so
+        // every slice comes back as the frame before it. The offsets still
+        // advance and the tab is still the one showing, so neither guard here
+        // catches it, and the stitch drew that one screen at every offset and
+        // saved a tall image that is the same screen over and over, with nothing
+        // to say so. Ask the page for a frame rather than compare the pixels: a
+        // flat stretch of page shoots the same bytes twice while drawing fine.
+        if (!await pageIsDrawing(tab)) throw new Error('Full page stopped: the window is not drawing (minimized?)');
+        url = await captureVisible(tab.windowId);
+        // captureVisibleTab shoots whichever tab is showing in the window. If the
+        // user switched tabs (or moved this one out) mid-stitch, this slice is
+        // another tab: stop rather than stitch it in.
+        const now = await chrome.tabs.get(tab.id);
+        if (!now.active || now.windowId !== tab.windowId) throw new Error('Full page stopped: another tab is now showing');
+        // And the fixed ones the page put in, or pinned, after the hide above:
+        // they are in this shot, at their spot on the screen (KAN-525). One
+        // found here sends the slice back to settle and run the passes above
+        // again before it is shot again. Shot straight away, it would wait out
+        // the rest of CAPTURE_MIN_GAP_MS after those passes instead, and give
+        // the page that long to put in another. The second shot is kept: the
+        // next slice's first fixed hide finds whatever turns up after it.
+        if (i === 0 || shot === 2 || !await setFixedHidden(tab, true)) break;
+      }
       const bmp = await createImageBitmap(await (await fetch(url)).blob());
       
       const sliceTopTemp = m.rect ? Math.round(Math.max(0, m.rect.top) * m.dpr) : 0;
@@ -678,7 +696,7 @@ async function hideStuckSticky(tab) {
 }
 
 async function setFixedHidden(tab, hide, first = false) {
-  await scriptWithTimeout({
+  const [{ result }] = await scriptWithTimeout({
     target: { tabId: tab.id },
     func: (doHide, first) => {
       if (doHide) {
@@ -689,6 +707,7 @@ async function setFixedHidden(tab, hide, first = false) {
         // fixed, once it scrolled (KAN-516). One hidden already keeps the
         // visibility recorded for it: by now it has the `hidden` it was given.
         const list = first ? [] : window.__shotHidden || [];
+        const before = list.length;
         // Shadow roots too, the same walk as markSticky's (KAN-507):
         // executeScript serializes each standalone, so they can't share it.
         const roots = [document];
@@ -701,6 +720,7 @@ async function setFixedHidden(tab, hide, first = false) {
           }
         }
         window.__shotHidden = list;
+        return list.length > before; // whether it hid one no pass before it had (KAN-525)
       } else {
         // Not only after the fixed hide: a sticky element can be hidden on the
         // first slice, and a capture can stop there (KAN-501).
@@ -712,6 +732,7 @@ async function setFixedHidden(tab, hide, first = false) {
     },
     args: [hide, first],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
+  return result;
 }
 
 // Temporarily hide the page scrollbar(s) so they don't show up in the shot.
