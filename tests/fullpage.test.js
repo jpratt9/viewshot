@@ -84,7 +84,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
       documentElement: de, body, scrollingElement: de, querySelectorAll: () => light,
       getElementById: (id) => styles.get(id) || null,
       createElement: () => ({ remove() { styles.delete(this.id); } }),
-      head: { appendChild: (s) => styles.set(s.id, s) },
+      head: { appendChild: (s) => styles.set(s.id, s), prepend: (s) => styles.set(s.id, s) },
     },
     // A window that is drawing runs the callback; from frozenAt on it never does.
     // The probe for slice k runs before capture k, so captureAt is one short.
@@ -387,7 +387,8 @@ test('stops after one slice when a scroll comes back with nothing', async () => 
 // the ones before. Anchoring is now on for every element while the page is
 // shot, with a rule put in the way the scrollbar one is (KAN-575). The rule
 // sits in a cascade layer, so a page's own `!important` on a more specific
-// selector doesn't outrank it (KAN-581).
+// selector doesn't outrank it (KAN-581). It goes first in <head>, so its layer
+// comes before any the page declares (KAN-582).
 
 test('turns scroll anchoring on while the page is shot, and back off after', async () => {
   const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
@@ -413,9 +414,9 @@ test('uses the anchoring rule a capture that died left behind, and takes it out'
   const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
   const left = { id: '__vsAnchor', textContent: '@layer{*{overflow-anchor:auto!important}}', remove() { styles.delete(this.id); } };
   styles.set(left.id, left);
-  const add = ctx.document.head.appendChild;
+  const add = ctx.document.head.prepend;
   let added = 0;
-  ctx.document.head.appendChild = (s) => { added++; return add(s); };
+  ctx.document.head.prepend = (s) => { added++; return add(s); };
   await ctx.captureFullPage(TAB);
   assert.strictEqual(added, 0, 'put a second rule in');
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
@@ -426,9 +427,19 @@ test('puts the anchoring rule on the root element of a page with no <head>', asy
   const { ctx, styles } = load({ de, body: el(3000, 3000), ih: 800, dpr: 1 });
   ctx.document.head = null;
   const inRoot = [];
-  de.appendChild = (s) => { inRoot.push(s.id); styles.set(s.id, s); };
+  de.prepend = (s) => { inRoot.push(s.id); styles.set(s.id, s); };
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(inRoot, ['__vsAnchor'], 'did not put the rule on the root element');
+  assert.strictEqual(styles.size, 0, 'left the rule in the page');
+});
+
+test('puts the anchoring rule first in <head>, before any layer the page declares', async () => {
+  const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  const first = [];
+  const put = ctx.document.head.prepend;
+  ctx.document.head.prepend = (s) => { first.push(s.id); return put(s); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(first, ['__vsAnchor'], 'did not put the rule first in <head>');
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
@@ -1245,7 +1256,7 @@ function scrollbarStyle(ctx) {
   Object.assign(ctx.document, {
     getElementById: (id) => byId.get(id) || null,
     createElement: () => { const el = { remove: () => byId.delete(el.id) }; return el; },
-    head: { appendChild: (el) => byId.set(el.id, el) },
+    head: { appendChild: (el) => byId.set(el.id, el), prepend: (el) => byId.set(el.id, el) },
   });
   const shots = [];
   const capture = ctx.chrome.tabs.captureVisibleTab;

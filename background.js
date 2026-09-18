@@ -329,12 +329,14 @@ function measurePage() {
   // none`: content above the screen that changes height then moves the offset,
   // which is how the stitch sees it (KAN-575). The cleanup scroll takes it out.
   // The rule sits in a cascade layer, where `!important` outranks a page's own
-  // `!important` outside one, whatever its selector (KAN-581).
+  // `!important` outside one, whatever its selector (KAN-581). It goes first in
+  // <head>: between layers, the first one declared wins for `!important`, so it
+  // comes before any layer the page declares (KAN-582).
   if (!document.getElementById('__vsAnchor')) {
     const style = document.createElement('style');
     style.id = '__vsAnchor';
     style.textContent = '@layer{*{overflow-anchor:auto!important}}';
-    (document.head || document.documentElement).appendChild(style);
+    (document.head || document.documentElement).prepend(style);
   }
   const de = document.documentElement, b = document.body;
   let el = de.scrollHeight > de.clientHeight + 1 ? de
