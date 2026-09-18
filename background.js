@@ -479,7 +479,7 @@ async function captureFullPage(tab, format) {
     }
 
     if (footerCanvas) {
-      const drawFooterTop = Math.round((Math.max(0, m.rect.top) + m.total) * m.dpr * scale);
+      const drawFooterTop = Math.round((Math.max(0, m.rect.top) + landed + m.vh) * m.dpr * scale);
       const finalHeight = drawFooterTop + footerCanvas.height;
       if (finalHeight > canvas.height && drawFooterTop <= maxCanvasHeight) {
         const newCanvas = new OffscreenCanvas(canvas.width, Math.min(maxCanvasHeight, finalHeight));
