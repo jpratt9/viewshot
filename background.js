@@ -428,7 +428,9 @@ async function setFixedHidden(tab, hide) {
 async function setScrollbarHidden(tab, hide) {
   // Cosmetic, so an uninjectable page must not be where the capture dies: on a
   // chrome:// URL this threw "Cannot access a chrome:// URL" before the shutter
-  // was ever reached, and such pages show no page scrollbar to hide anyway.
+  // was ever reached. Such a page is shot with its scrollbar, though: a data:
+  // page or another extension's page taller than the window keeps it along the
+  // right edge, and nothing outside the page can take it out.
   try {
     await scriptWithTimeout({
       target: { tabId: tab.id },

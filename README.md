@@ -8,7 +8,7 @@ A fast, minimal, **open-source** Chrome extension for screenshots — capture th
 - Tab recording to WebM, MP4 or GIF — choose one as the format, then **Record** and **Stop recording** (GIFs are 10 fps, up to 720px wide, and stop by themselves after about a minute)
 - Filename templates — `{date} {time} {domain} {title}`
 - Download or copy straight to clipboard
-- **Hide scrollbar before capturing** keeps the scrollbar out of screenshots (on by default)
+- **Hide scrollbar before capturing** keeps the scrollbar out of screenshots (on by default), except on chrome:// pages, the Web Store, other extensions' pages and data: URLs, where Chrome doesn't let extensions run scripts
 - Keyboard shortcuts — `Alt+Shift+V` visible area · `Alt+Shift+F` full page · `Alt+Shift+R` region · `Alt+Shift+S` start/stop recording (change them at `chrome://extensions/shortcuts`). Select WebM, MP4, or GIF before starting a recording; an image format flashes `!`. The recording shortcut stops an active recording from any tab, regardless of the selected format.
 - Nothing leaves your device — see [Permissions](#permissions)
 
