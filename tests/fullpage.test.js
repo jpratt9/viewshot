@@ -625,6 +625,31 @@ test('leaves a sticky header slotted into a scroller inside a component where it
   }
 });
 
+test('leaves a sticky header slotted into a scroller inside a closed shadow root where it is painted', async () => {
+  // A closed root's slot doesn't show as assignedSlot, so the climb looks for
+  // it among the root's slots: the one whose assignedElements() holds the
+  // header, or the wrapper it sits in. The root's other slot sits outside the
+  // box and takes nothing (KAN-511).
+  const cases = {
+    'the header slotted': (header, host) => Object.assign(header, { parentElement: host, assignedSlot: null }),
+    'a wrapper slotted': (header, host) => (header.parentElement = { parentElement: host, assignedSlot: null }),
+  };
+  for (const [name, place] of Object.entries(cases)) {
+    const body = el(3052, 767);
+    const header = positioned('sticky');
+    header.getBoundingClientRect = () => {
+      const top = (header.style.getPropertyValue('position') === 'static' ? 100 : 400) - body.scrollTop;
+      return { top, bottom: top + 30 };
+    };
+    let slotted; // what the slot in the box takes
+    const slot = { parentElement: { overflow: 'auto' }, assignedElements: () => [slotted] };
+    slotted = place(header, shadowHost('closed', { assignedElements: () => [] }, slot));
+    const { ctx } = load({ de: el(767, 767), body, fixed: [header] });
+    await ctx.captureFullPage(TAB);
+    assert.ok(!header.seen.includes('hidden'), `blanked a header shown through a closed root's slot in a scroller (${name})`);
+  }
+});
+
 test('reads a slotted sticky element as the page\'s when nothing around its slot scrolls', async () => {
   // Climbing through the slot mustn't make every slotted element its own: with
   // no scroller between the slot and the page, a bottom bar stuck to the first

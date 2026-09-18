@@ -454,9 +454,15 @@ async function markSticky(tab, offset) {
       // to that box (KAN-507). And an element a component shows through a slot
       // is laid out under the slot, so the climb goes there first: a scroller
       // around the slot is its own (KAN-509). assignedSlot only answers for an
-      // open root.
+      // open root, so for a closed one the climb looks through the root
+      // chrome.dom hands back for the host, for the slot whose
+      // assignedElements() holds the element (KAN-511).
+      const slotOf = (n) => {
+        const root = n.parentElement instanceof HTMLElement && chrome.dom.openOrClosedShadowRoot(n.parentElement);
+        return root && [...root.querySelectorAll('slot')].find((s) => s.assignedElements().includes(n));
+      };
       const onPage = list.filter((el) => {
-        for (let p = el.assignedSlot || el.parentElement || el.getRootNode().host; p && p !== document.body && p !== document.documentElement; p = p.assignedSlot || p.parentElement || p.getRootNode().host) {
+        for (let p = el.assignedSlot || slotOf(el) || el.parentElement || el.getRootNode().host; p && p !== document.body && p !== document.documentElement; p = p.assignedSlot || slotOf(p) || p.parentElement || p.getRootNode().host) {
           if (/auto|scroll|hidden/.test(getComputedStyle(p).overflow)) return false;
         }
         return true;
