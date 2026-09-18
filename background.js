@@ -368,9 +368,10 @@ async function captureFullPage(tab, format) {
       // Stop rather than stack the same viewport down the canvas.
       if (i > 0 && actual <= landed) break;
       landed = actual;
-      // The sticky elements that stick to the page, listed on the first slice.
-      // From here on there is something for the finally to put back.
-      if (i === 0 && positions.length > 1) { await markSticky(tab); hid = true; }
+      // The sticky elements that stick to the page, listed on the first slice
+      // and added to on every later one (KAN-503). From here on there is
+      // something for the finally to put back.
+      if (positions.length > 1) { await markSticky(tab, i === 0); hid = true; }
       // Keep fixed elements (pinned headers, banners) on the FIRST slice only;
       // hide them on later slices so they aren't stitched in repeatedly.
       if (i === 1) await setFixedHidden(tab, true);
@@ -424,10 +425,10 @@ async function captureFullPage(tab, format) {
 // hiding only the ones the first screen showed stitched them in again at the
 // top of every slice they stayed stuck in (KAN-403). So each slice hides the
 // ones that are away from their place (see hideStuckSticky).
-async function markSticky(tab) {
+async function markSticky(tab, first) {
   await scriptWithTimeout({
     target: { tabId: tab.id },
-    func: () => {
+    func: (first) => {
       const list = [];
       // querySelectorAll doesn't go into a shadow root, so each one it passes
       // is searched in turn, closed ones too (KAN-507). chrome.dom throws on
@@ -461,8 +462,14 @@ async function markSticky(tab) {
         }
         return true;
       });
-      window.__shotSticky = onPage.map((el) => [el, el.style.visibility]);
+      // After the first slice, only the ones that have turned up since are
+      // added: put in the page, or made sticky, once it scrolled (KAN-503). One
+      // listed already keeps the visibility recorded for it: by now it has the
+      // one hideStuckSticky gave it, not its own.
+      const listed = first ? [] : window.__shotSticky || [];
+      window.__shotSticky = [...listed, ...onPage.filter((el) => !listed.some(([e]) => e === el)).map((el) => [el, el.style.visibility])];
     },
+    args: [first],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 
