@@ -345,8 +345,19 @@ function measurePage() {
     style = document.createElement('style');
     style.id = '__vsAnchor';
   }
-  (document.head || document.documentElement).prepend(style);
+  const head = document.head || document.documentElement;
+  head.prepend(style);
   style.textContent = '@layer{*{overflow-anchor:auto!important;scroll-snap-type:none!important}}';
+  // It stays first while the page is shot: a page that puts a style sheet of
+  // its own in front of it, on a scroll say, declares its layer first from
+  // then on, and that layer's `!important` wins (KAN-615). The observer puts
+  // the rule back in front as soon as the page's script that did it has run,
+  // before the browser next lays the page out. The cleanup scroll disconnects
+  // it. One a capture that died left connected is disconnected here, or it
+  // would put the rule back once this capture's cleanup took it out.
+  window.__vsAnchorObserver?.disconnect();
+  window.__vsAnchorObserver = new MutationObserver(() => { if (head.firstChild !== style) head.prepend(style); });
+  window.__vsAnchorObserver.observe(head, { childList: true });
   // A page's own `!important` in a style attribute outranks every style sheet
   // rule, so each element with one gets the capture's own inline
   // `auto !important`, and the cleanup scroll puts the page's back (KAN-583).
@@ -408,6 +419,8 @@ function scrollAndReport(to, cleanup, last) {
   }
   if (cleanup) {
     delete window.__vsScroller;
+    window.__vsAnchorObserver?.disconnect();
+    delete window.__vsAnchorObserver;
     document.getElementById('__vsAnchor')?.remove();
     for (const [node, value, name = 'overflow-anchor'] of window.__vsAnchored || []) node.style.setProperty(name, value, 'important');
     delete window.__vsAnchored;

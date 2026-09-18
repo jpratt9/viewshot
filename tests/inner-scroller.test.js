@@ -25,6 +25,7 @@ function load({ body, inner, iw = 1512, ih = 767, dpr = 2 }) {
     console, URL, btoa, Date, clearTimeout, setTimeout: (fn, ms) => { if (ms !== captureTimeout && ms !== pageScriptTimeout) fn(); }, HTMLElement,
     document: { documentElement: body, body, scrollingElement: body, querySelectorAll: (sel) => (sel === '*' && inner ? [inner] : []), getElementById: () => null, createElement: () => ({}), head: { prepend() {} } },
     requestAnimationFrame: (cb) => { cb(); },
+    MutationObserver: class { observe() {} disconnect() {} }, // measurePage's, on <head> (KAN-615)
     getComputedStyle: (e) => ({ position: 'static', overflow: 'visible', overflowY: e === inner ? 'auto' : 'visible' }),
     window: { innerWidth: iw, innerHeight: ih, devicePixelRatio: dpr, scrollTo: (x, y) => { if (body) body.scrollTo(typeof x === 'object' ? x : { left: x, top: y }); }, getComputedStyle: (e) => ({ position: 'static', overflow: 'visible', overflowY: e === inner ? 'auto' : 'visible' }) },
     OffscreenCanvas: FakeCanvas,

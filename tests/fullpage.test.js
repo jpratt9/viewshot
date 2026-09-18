@@ -72,6 +72,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   let pageScriptTimeout; // CAPTURE_SCRIPT_TIMEOUT_MS, likewise
   const styles = new Map(); // the <style> elements the capture puts in the page, by id
+  const observers = []; // the MutationObservers the capture makes in the page
   const context = {
     console,
     URL, btoa, Date, clearTimeout,
@@ -87,6 +88,14 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
       getElementById: (id) => styles.get(id) || null,
       createElement: () => ({ remove() { styles.delete(this.id); } }),
       head: { appendChild: (s) => styles.set(s.id, s), prepend: (s) => styles.set(s.id, s) },
+    },
+    // The capture's observers: what each one watches, until it is disconnected.
+    // Nothing calls one back unless a test does, as the browser would once the
+    // page's script has run.
+    MutationObserver: class {
+      constructor(cb) { this.cb = cb; this.on = null; observers.push(this); }
+      observe(node) { this.on = node; }
+      disconnect() { this.on = null; }
     },
     // A window that is drawing runs the callback; from frozenAt on it never does.
     // The probe for slice k runs before capture k, so captureAt is one short.
@@ -142,7 +151,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   vm.runInContext(CODE, context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
-  return { ctx: context, canvases, scriptCalls, captureAt, shownAt, sent, styles, message: (m) => onMessage(m, {}, () => {}) };
+  return { ctx: context, canvases, scriptCalls, captureAt, shownAt, sent, styles, observers, message: (m) => onMessage(m, {}, () => {}) };
 }
 
 const TAB = { id: 1, windowId: 9 };
@@ -596,6 +605,77 @@ test('puts the anchoring rule first in <head>, before any layer the page declare
   ctx.document.head.prepend = (s) => { first.push(s.id); return put(s); };
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(first, ['__vsAnchor'], 'did not put the rule first in <head>');
+  assert.strictEqual(styles.size, 0, 'left the rule in the page');
+});
+
+test('keeps the anchoring rule first in <head> while the page is shot', async () => {
+  // The page puts a style sheet of its own first in <head> while the second
+  // slice settles, and the browser calls the observers on <head> back once
+  // the page's script has run. The rule stayed where it was, so the page's
+  // layer was declared first for the rest of the capture, and one that turns
+  // anchoring off kept it off (KAN-615).
+  const body = el(3000, 713);
+  const { ctx, styles, observers } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  const kids = []; // <head>'s children, in order
+  const head = ctx.document.head = {
+    get firstChild() { return kids[0] || null; },
+    prepend(n) { if (kids.includes(n)) kids.splice(kids.indexOf(n), 1); kids.unshift(n); if (n.id) styles.set(n.id, n); },
+  };
+  let put = false;
+  const timer = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms) => {
+    if (ms === 500 && body.scrollTop === 713 && !put) {
+      put = true;
+      head.prepend({}); // the page's own <style>
+      for (const o of observers) if (o.on === head) o.cb([], o);
+    }
+    return timer(fn, ms);
+  };
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  const first = [];
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => { first.push(kids[0].id); return shoot(...a); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(first, Array(5).fill('__vsAnchor'), "shot a slice with the page's own style sheet in front of the rule");
+  assert.ok(observers.every((o) => !o.on), 'left <head> watched');
+  assert.strictEqual(styles.size, 0, 'left the rule in the page');
+});
+
+test('disconnects the observer a capture that died left on <head>', async () => {
+  // Left connected, it would put the rule back once this capture's cleanup
+  // took it out (KAN-615).
+  const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  let off = false;
+  ctx.window.__vsAnchorObserver = { disconnect() { off = true; } };
+  await ctx.captureFullPage(TAB);
+  assert.ok(off, 'left the observer a capture that died left behind connected');
+  assert.strictEqual(styles.size, 0, 'left the rule in the page');
+});
+
+test('leaves the anchoring rule where it is when the page adds to <head> behind it', async () => {
+  // The rule is still first, so the observer leaves it. Putting it first again
+  // anyway changes <head> too, which calls the observer back to do it again,
+  // without end (KAN-615).
+  const body = el(3000, 713);
+  const { ctx, styles, observers } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  const kids = []; // <head>'s children, in order
+  const put = []; // what went first in <head>
+  const head = ctx.document.head = {
+    get firstChild() { return kids[0] || null; },
+    appendChild(n) { kids.push(n); },
+    prepend(n) { put.push(n.id); if (kids.includes(n)) kids.splice(kids.indexOf(n), 1); kids.unshift(n); if (n.id) styles.set(n.id, n); },
+  };
+  let added = false;
+  const timer = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms) => {
+    if (ms === 500 && body.scrollTop === 713 && !added) {
+      added = true;
+      head.appendChild({}); // the page's own <style>, last in <head>
+      for (const o of observers) if (o.on === head) o.cb([], o);
+    }
+    return timer(fn, ms);
+  };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(put, ['__vsAnchor'], 'put the rule first again when it already was');
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
