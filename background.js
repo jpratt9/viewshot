@@ -523,7 +523,7 @@ async function captureFullPage(tab, format, popupId) {
       // A slice can be shot twice: see the fixed hide after the shot (KAN-525).
       let url, backs = 0;
       for (let shot = 1; ; shot++) {
-        if (backs < 2) await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
+        await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
         // And the fixed ones the page put in, or pinned, while it settled: the
         // hide above ran before they were there (KAN-522). It goes before the
         // frame check, so the frame the shot waits for has this hide in it.

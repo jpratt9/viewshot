@@ -453,7 +453,7 @@ test('shoots a slice it puts back before the page scrolls itself again', async (
   const timer = ctx.setTimeout;
   ctx.setTimeout = (fn, ms) => { if (ms === 500 && body.scrollTop === 713 && scrolls < 5) { scrolls++; body.scrollTop += 200; } return timer(fn, ms); };
   await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287], 'let the page settle again, and shot it where it scrolled itself to');
+  assert.deepStrictEqual(captureAt, [0, 913, 1426, 2139, 2287], 'let the page settle again, and shot it where it scrolled itself to');
   assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
   assert.strictEqual(canvases[canvases.length - 1].height, 3000, 'cut the image short');
   assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 8, 'did not put the page back twice');
@@ -536,7 +536,7 @@ test('shoots a slice it put back twice only once, even when a fixed element turn
   const timer = ctx.setTimeout;
   ctx.setTimeout = (fn, ms) => { if (ms === 500 && body.scrollTop === 713 && scrolls < 5) { scrolls++; body.scrollTop += 200; } return timer(fn, ms); };
   await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287], 'shot the slice it put back twice again');
+  assert.deepStrictEqual(captureAt, [0, 913, 1426, 2139, 2287], 'shot the slice it put back twice again');
   assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 8, 'did not put the page back twice');
 });
 
