@@ -640,7 +640,7 @@ async function startRecording(streamId, opts, tabId) {
   if (!(await getRec())) { console.warn('[ViewShot] stopped before the recorder started; not starting it'); return; }
   await chrome.runtime.sendMessage({
     type: 'rec-start-offscreen', streamId, format: opts.format,
-    width: dims?.width, height: dims?.height,
+    width: dims?.width, height: dims?.height, cssPx: dims?.cssPx,
   });
   log('rec-start-offscreen sent, dims=', dims);
 }
@@ -651,9 +651,9 @@ async function startRecording(streamId, opts, tabId) {
 // unpinned capture has (scaled to a ceiling resolution, padded with black).
 // chrome:// pages, the Web Store and file:// without file access refuse the
 // script, and so does a page that doesn't answer in time, so fall back to
-// chrome.tabs.Tab.width/height: the same viewport, but in CSS pixels, which
-// on a HiDPI display records at 1x rather than at the page's own dpr.
-// Unpinned is worse than 1x: it letterboxes a 1280x713 tab to 800x600.
+// chrome.tabs.Tab.width/height: the same viewport, but in CSS pixels. Those
+// are marked cssPx so the offscreen document can scale them by its own
+// devicePixelRatio, which is the display's — the worker has none of its own.
 async function getViewport(tab) {
   if (!tab?.id) return null;
   try {
@@ -667,7 +667,7 @@ async function getViewport(tab) {
     return result;
   } catch (e) {
     console.warn('[ViewShot] getViewport failed:', e);
-    return tab.width && tab.height ? { width: tab.width, height: tab.height } : null;
+    return tab.width && tab.height ? { width: tab.width, height: tab.height, cssPx: true } : null;
   }
 }
 

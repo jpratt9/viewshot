@@ -22,7 +22,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // an offscreen document shares its renderer main thread with the popup, and
   // Chrome won't paint the popup until that thread lets its onload finish.
   if (msg?.type === 'shot-clipboard') { copyToClipboard(msg.dataUrl).then(() => sendResponse('done')); return true; }
-  else if (msg?.type === 'rec-start-offscreen') { log('rec-start-offscreen, format=', msg.format, 'dims=', msg.width, 'x', msg.height); startRecording(msg.streamId, msg.format, msg.width, msg.height).catch(onRecError); }
+  else if (msg?.type === 'rec-start-offscreen') { log('rec-start-offscreen, format=', msg.format, 'dims=', msg.width, 'x', msg.height, msg.cssPx ? '(css px)' : ''); startRecording(msg.streamId, msg.format, msg.width, msg.height, msg.cssPx).catch(onRecError); }
   else if (msg?.type === 'rec-stop-offscreen') { log('rec-stop-offscreen, filename=', msg.filename); stopRecording(msg.filename); }
 });
 
@@ -48,7 +48,7 @@ let rec = null; // { stream, format, recorder?, chunks?, gif?, timer?, frames? }
 let saving = 0; // recordings stopped but not saved yet (see stopRecording)
 let lastStart = null; // { stopped }, so a Stop can reach a start still waiting on getUserMedia
 
-async function startRecording(streamId, format, width, height) {
+async function startRecording(streamId, format, width, height, cssPx) {
   // One recording at a time: replacing `rec` would leave the one already
   // running with nothing that can stop or save it.
   if (rec) { console.warn('[ViewShot] a recording is already running; not starting another'); return; }
@@ -60,6 +60,13 @@ async function startRecording(streamId, format, width, height) {
   // (aspectRatio, applyConstraints) are silently ignored when chromeMediaSource
   // is set; the legacy mandatory block is the only honored surface.
   const mandatory = { chromeMediaSource: 'tab', chromeMediaSourceId: streamId };
+  // The worker's fallback dims are chrome.tabs.Tab.width/height, which is the
+  // viewport in CSS pixels: it doesn't scale with the display. tabCapture
+  // streams physical pixels, so pinning those raw records a HiDPI tab at 1x.
+  // This document has no display of its own, but its devicePixelRatio is the
+  // display's scale factor all the same — and unlike the page's, it doesn't
+  // move with page zoom, which is what Tab.width/height needs.
+  if (cssPx && width && height) { width = Math.round(width * devicePixelRatio); height = Math.round(height * devicePixelRatio); }
   if (width && height) {
     Object.assign(mandatory, { minWidth: width, maxWidth: width, minHeight: height, maxHeight: height });
   }

@@ -497,6 +497,7 @@ function loadOffscreen() {
   FakeRecorder.isTypeSupported = () => true;
 
   const sent = [];
+  const asked = []; // what each getUserMedia was asked for: the pinned dims live here
   const timers = []; // download()'s URL revoke, a minute on
   let onMessage;
   const trackListeners = {};
@@ -507,7 +508,8 @@ function loadOffscreen() {
     chrome: {
       runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, sendMessage: async (m) => { sent.push(m); }, getURL: (p) => p },
     },
-    navigator: { mediaDevices: { getUserMedia: async () => stream } },
+    navigator: { mediaDevices: { getUserMedia: async (c) => { asked.push(c); return stream; } } },
+    devicePixelRatio: 2, // a HiDPI display: the fallback's CSS-pixel dims are scaled by it
     crypto: { randomUUID: () => 'doc-1' }, // the id this document answers with
     MediaRecorder: FakeRecorder,
     Blob: class { constructor(parts, { type } = {}) { this.parts = parts; this.size = parts.length; this.type = type; } },
@@ -531,7 +533,7 @@ function loadOffscreen() {
   // download() writes through an <a>, so keep each Blob on its way through.
   vm.runInContext('download = ((real) => (blob, name) => { __downloads.push([blob, name]); real(blob, name); })(download);', Object.assign(context, { __downloads: downloads }));
   return {
-    ctx: context, recorders, downloads, videos, sent, endTrack: () => trackListeners.ended(),
+    ctx: context, recorders, downloads, videos, sent, asked, endTrack: () => trackListeners.ended(),
     message: (msg, respond = () => {}) => onMessage(msg, {}, respond),
     runTimers: () => timers.splice(0).forEach((fn) => fn()),
   };
@@ -810,6 +812,48 @@ test('a recording of a tab Chrome reports no size for is left unpinned', async (
   await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
   const start = sent.find((m) => m.type === 'rec-start-offscreen');
   assert.deepStrictEqual([start.width, start.height], [undefined, undefined], 'pinned the capture to a size nobody knows');
+});
+
+// --- the fallback's dims are CSS pixels -------------------------------------
+// chrome.tabs.Tab.width/height doesn't scale with the display, so pinning it
+// raw records a HiDPI tab at 1x while an http page in the same window records
+// at its own dpr. The worker has no devicePixelRatio of its own, so it marks
+// the dims instead and the offscreen document — which has one, and the
+// display's — scales them.
+
+test('a recording of a page that refuses scripts says its dims are CSS pixels', async () => {
+  const bg = loadBg({ scriptFails: true });
+  const sent = recStart(bg);
+  await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
+  const start = sent.find((m) => m.type === 'rec-start-offscreen');
+  assert.strictEqual(start.cssPx, true, 'the offscreen document has no way to tell these need scaling');
+});
+
+test('a recording of a page that answers keeps its dims in physical pixels', async () => {
+  const bg = loadBg();
+  const sent = recStart(bg);
+  Object.assign(bg.ctx.window, { innerWidth: 1280, innerHeight: 713, devicePixelRatio: 2 });
+  await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
+  const start = sent.find((m) => m.type === 'rec-start-offscreen');
+  assert.deepStrictEqual([start.width, start.height], [2560, 1426], 'the script already multiplied by the page dpr');
+  assert.ok(!start.cssPx, 'these would be scaled a second time');
+});
+
+const pinned = (o) => {
+  const { mandatory } = o.asked[0].video;
+  return [mandatory.minWidth, mandatory.maxWidth, mandatory.minHeight, mandatory.maxHeight];
+};
+
+test('a start told its dims are CSS pixels pins the capture to the display scale', async () => {
+  const o = loadOffscreen(); // devicePixelRatio 2
+  await o.ctx.startRecording('sid', 'webm', 1280, 713, true);
+  assert.deepStrictEqual(pinned(o), [2560, 2560, 1426, 1426], 'a HiDPI tab was recorded at 1x');
+});
+
+test('a start not told that pins the dims it was given', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 2560, 1426);
+  assert.deepStrictEqual(pinned(o), [2560, 2560, 1426, 1426], 'physical pixels were scaled a second time');
 });
 
 // A named tab can close before the worker looks it up. Falling back to the
