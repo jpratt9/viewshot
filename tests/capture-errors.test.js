@@ -2035,6 +2035,41 @@ test('a cosmetic script that never answers does not hold up the shot', async () 
   assert.deepStrictEqual(bg.badges, [], 'flashed for a script whose failure is ignored');
 });
 
+// The clipboard write a shortcut's copy runs in the page was the one injection
+// left unfenced: the copy stayed pending for good, nothing was copied, no
+// badge said so, and copiesPending held every later closeOffscreen off (KAN-495).
+test('a copy whose tab write never runs fails, and lets the document close', async () => {
+  const bg = loadBg({ scriptHangs: true });
+  const closed = [];
+  bg.ctx.chrome.offscreen = { hasDocument: async () => true, closeDocument: async () => { closed.push(true); } };
+  bg.ctx.chrome.runtime.sendMessage = async (m) => {
+    if (m.type === 'shot-clipboard-offscreen') return { error: "Failed to execute 'write' on 'Clipboard': Document is not focused." };
+  };
+  let failure;
+  bg.ctx.copyImage(PNG, TAB.id).catch((e) => { failure = e; });
+  await settle();
+  assert.strictEqual(failure, undefined, 'gave up before the deadline');
+  bg.expire(); // the tab write's deadline passes
+  await settle();
+  assert.match(String(failure), /not focused/, 'the copy never got past the tab');
+  assert.strictEqual(vm.runInContext('copiesPending', bg.ctx), 0, 'the copy still counts as under way');
+  assert.deepStrictEqual(closed, [true], 'the offscreen document was left open');
+});
+
+// A page that refuses the injection (chrome://, the Web Store) says so at once:
+// the deadline only bounds a page that never answers.
+test('a copy on a page that refuses the tab write goes straight on to the document', async () => {
+  const bg = loadBg({ scriptFails: true });
+  bg.ctx.chrome.offscreen = { hasDocument: async () => true, closeDocument: async () => {} };
+  bg.ctx.chrome.runtime.sendMessage = async (m) => {
+    if (m.type === 'shot-clipboard-offscreen') return { error: "Failed to execute 'write' on 'Clipboard': Document is not focused." };
+  };
+  let failure;
+  bg.ctx.copyImage(PNG, TAB.id).catch((e) => { failure = e; });
+  await settle();
+  assert.match(String(failure), /not focused/, 'the refusal waited out the deadline');
+});
+
 test('a hanging GIF encode is aborted after 30 seconds', async () => {
   const o = loadOffscreen();
   let aborted = false;

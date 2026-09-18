@@ -577,8 +577,11 @@ async function copyImage(pngDataUrl, tabId) {
     if (popupRes?.error) throw new Error(popupRes.error);
 
     // 2. Try the active tab
+    // Fenced like every other page script: a page whose main thread never frees
+    // up never runs it, and the copy stayed pending for good - no !, and
+    // copiesPending held every later closeOffscreen off (KAN-495).
     if (tabId) {
-      const tabRes = await chrome.scripting.executeScript({
+      const tabRes = await scriptWithTimeout({
         target: { tabId },
         func: async (dataUrl) => {
           try {
@@ -590,7 +593,7 @@ async function copyImage(pngDataUrl, tabId) {
           }
         },
         args: [pngDataUrl]
-      }).catch(() => null);
+      }, CAPTURE_SCRIPT_TIMEOUT_MS).catch(() => null);
       
       const res = tabRes && tabRes[0] && tabRes[0].result;
       if (res === 'done') return;
