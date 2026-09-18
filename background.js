@@ -27,6 +27,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // that reports trouble with a recording that is finished.
   else if (msg?.type === 'rec-cap-hit') stopRecording().then((stopped) => { if (stopped) return flashBadge('MAX'); }).catch((e) => console.error('[ViewShot]', e));
   else if (msg?.type === 'rec-failed') recFailed();
+  // A recording's file is saved and the document has let go of it. Nothing else
+  // closes the document after a recording; closeOffscreen still leaves it to a
+  // recording running in it, or another one still being saved.
+  else if (msg?.type === 'rec-saved') closeOffscreen().catch((e) => console.error('[ViewShot]', e));
   // The popup reads `rec` from storage without waking the worker, so a leftover
   // key would go unnoticed for as long as the popup was the only thing running.
   // This message is what checks it for the popup: opening one is also the way a

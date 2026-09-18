@@ -139,6 +139,49 @@ test('leaves the document alone while a stopped recording is still being saved i
   assert.strictEqual(calls.close, 1, 'the document outlived the recording it was saving');
 });
 
+// Once the recording is saved, though, nothing closed the document: it stayed
+// open until a clipboard copy closed it, and with that setting off, for good.
+// The document now says when the download is done with the file, and the
+// worker closes it then, through the same checks a copy's close goes through.
+test('closes the document once a stopped recording has been saved', async () => {
+  const { calls, docLives, send } = load({ hasDoc: true }); // Stop has removed `rec`
+  send({ type: 'rec-saved' });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(calls.close, 1, 'the document outlived the recording it saved');
+  assert.strictEqual(docLives(), false);
+});
+
+test('a saved recording leaves the document to a recording still running in it', async () => {
+  const { calls, docLives, send } = load({ rec: { format: 'webm', filename: 'x' }, hasDoc: true });
+  send({ type: 'rec-saved' });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(calls.close, 0, 'closing mid-recording would destroy the capture');
+  assert.strictEqual(docLives(), true);
+});
+
+test('a saved recording leaves the document to another one still being saved in it', async () => {
+  const { ctx, calls, docLives, send } = load({ hasDoc: true });
+  ctx.chrome.runtime.sendMessage = async (m) => (m.type === 'offscreen-busy' ? true : 'done');
+  send({ type: 'rec-saved' });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(calls.close, 0, 'closing mid-save would lose the other recording');
+  assert.strictEqual(docLives(), true);
+});
+
+// Nothing waits on the listener's close, so a failure in it is only ever seen
+// if the listener logs it.
+test('a saved recording whose close fails logs it', async () => {
+  const { ctx, calls, send } = load({ hasDoc: true });
+  const errors = [];
+  ctx.console = { ...console, error: (...a) => errors.push(a) };
+  ctx.chrome.storage.local.get = async () => { throw new Error('storage failed'); };
+  send({ type: 'rec-saved' });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(errors.length, 1, 'the failed close was never reported');
+  assert.match(String(errors[0][1]), /storage failed/);
+  assert.strictEqual(calls.close, 0);
+});
+
 // --- unless the browser or the extension ended it -----------------------------
 // `rec` is kept in chrome.storage.local so a recording outlives a worker
 // restart. It also outlived Chrome quitting and the extension reloading, which

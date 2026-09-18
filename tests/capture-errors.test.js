@@ -604,7 +604,7 @@ test('an error from a normally stopped recorder leaves its save and replacement 
   assert.strictEqual(busy(o), false);
   await o.ctx.startRecording('sid2', 'webm', 100, 100);
   first.fail(new Error('another late error'));
-  assert.deepStrictEqual(o.sent, []);
+  assert.deepStrictEqual(o.sent.map((m) => m.type), ['rec-saved']); // the first recording's save, and no rec-failed
   assert.deepStrictEqual(stops, [1, 0]);
   assert.strictEqual(busy(o), true);
   assert.strictEqual(o.recorders[1].state, 'recording');
@@ -1518,6 +1518,23 @@ test('a WebM keeps its document busy from its stop until the download is done wi
   assert.strictEqual(busy(o), true, 'the worker could close the document while the download still needs the file');
   o.runTimers();
   assert.strictEqual(busy(o), false, 'the document stayed busy after its file was saved');
+});
+
+// --- a document left open after every recording -----------------------------
+// Nothing closed the document once a recording was saved: it stayed open until
+// a clipboard copy closed it, and with that setting off, for good. The document
+// now tells the worker once the download is done with the file.
+
+test('a saved recording tells the worker once the download is done with the file', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  o.ctx.stopRecording('out.webm');
+  o.recorders[0].finish();
+  await settle();
+  assert.deepStrictEqual(o.downloads.map(([, name]) => name), ['out.webm']);
+  assert.deepStrictEqual(o.sent, [], 'the worker was told while the download still needed the file');
+  o.runTimers(); // the file's URL is revoked
+  assert.deepStrictEqual(o.sent.map((m) => m.type), ['rec-saved'], 'nothing told the worker the document could be closed');
 });
 
 // --- a Stop while getUserMedia is still answering ---------------------------

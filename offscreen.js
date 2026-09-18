@@ -293,7 +293,10 @@ function download(blob, filename) {
   const a = document.createElement('a');
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => { URL.revokeObjectURL(url); saving--; }, 60000);
+  // Once the download is done with the file, the worker can close this
+  // document: nothing else does after a recording, and it shares its main
+  // thread with the popup. The worker still asks offscreen-busy first.
+  setTimeout(() => { URL.revokeObjectURL(url); saving--; chrome.runtime.sendMessage({ type: 'rec-saved' }); }, 60000);
 }
 
 // Release everything this document holds. The frame timer and the capture
