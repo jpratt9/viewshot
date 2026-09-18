@@ -352,7 +352,7 @@ function measurePage() {
   };
 }
 
-function scrollAndReport(to, cleanup) {
+function scrollAndReport(to, cleanup, fromHere) {
   const de = document.documentElement, b = document.body;
   let el = window.__vsScroller;
   if (!el) {
@@ -371,12 +371,15 @@ function scrollAndReport(to, cleanup) {
   }
   if (cleanup) delete window.__vsScroller;
   const isRoot = el === de || el === b || el === document.scrollingElement;
+  // Where the page is before it moves. fromHere scrolls `to` on from there.
+  const from = el.scrollTop;
+  if (fromHere) to += from;
   // 'instant' overrides a page's `scroll-behavior: smooth` (Bootstrap 5,
   // Tailwind's scroll-smooth). Without it the scroll animates, the read below
   // still sees the old offset, and the stitch stops after the first screen.
   el.scrollTo({ top: to, behavior: 'instant' });
   if (isRoot) window.scrollTo({ left: 0, top: to, behavior: 'instant' }); // no-op unless the document itself is the scroller
-  return { actual: el.scrollTop, total: el.scrollHeight };
+  return { from, actual: el.scrollTop, total: el.scrollHeight };
 }
 
 // Ask the page for a frame. A window that isn't drawing - minimized, occluded -
@@ -403,14 +406,15 @@ async function pageIsDrawing(tab) {
   return result === true;
 }
 
-// Scroll to y and report where the page ACTUALLY landed. The caller stitches
-// at the returned offset rather than the requested one, so a page that clamps,
-// animates, or ignores the scroll still produces a correctly aligned image.
-async function scrollPageTo(tab, y, cleanup = false) {
+// Scroll to y (with fromHere, y past where the page is now) and report where
+// the page ACTUALLY landed. The caller stitches at the returned offset rather
+// than the requested one, so a page that clamps, animates, or ignores the
+// scroll still produces a correctly aligned image.
+async function scrollPageTo(tab, y, cleanup = false, fromHere = false) {
   const [{ result }] = await scriptWithTimeout({
-    target: { tabId: tab.id }, func: scrollAndReport, args: [y, cleanup],
+    target: { tabId: tab.id }, func: scrollAndReport, args: [y, cleanup, fromHere],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
-  return result || { actual: 0, total: 0 };
+  return result || { from: 0, actual: 0, total: 0 };
 }
 
 // ---- full page: scroll the viewport and stitch ----
@@ -445,8 +449,16 @@ async function captureFullPage(tab, format, popupId) {
   // leave it scrolled to where the stitch stopped with its headers hidden.
   try {
     while (true) {
-      const { actual, total } = await scrollPageTo(tab, target);
-      m.total = total;
+      // The first slice goes to the top. Each later one scrolls on from where
+      // the last one's rows are now, not to a fixed offset. Content above them
+      // that loads in or goes away moves them, and Chrome's scroll anchoring
+      // moves the page with them, so they are now `moved` px from where they
+      // were drawn. The slice is drawn, and the page's height counted, that
+      // much back, so it lines up with the slices before it (KAN-515).
+      const { from, actual: reached, total } = await scrollPageTo(tab, target - landed, false, i > 0);
+      const moved = i > 0 ? from - landed : 0;
+      const actual = reached - moved;
+      m.total = total - moved;
       // The page refused to advance (unscrollable, or a scroller we can't drive).
       // Stop rather than stack the same viewport down the canvas.
       if (i > 0 && actual <= landed) break;

@@ -318,6 +318,62 @@ test('stitches every screen of a smooth-scrolling page', async () => {
   assert.deepStrictEqual(captureAt, [0, 800, 1600, 2200], 'stopped before the end of the page');
 });
 
+// --- content above the screen that changes height --------------------------
+// Each slice was drawn where the page was when it was shot. Content above the
+// screen that loads in or goes away moves everything under it, and Chrome's
+// scroll anchoring moves the page with it, so every slice after that was drawn
+// off from the ones before: the rows the page grew by went in twice, and the
+// rows it shrank by not at all. They are now drawn back by as much (KAN-515).
+
+// A page whose content above the screen changes height by `by` px while the
+// second slice settles, with the offset moved by as much, the way scroll
+// anchoring does it.
+function anchoredPage(by) {
+  let height = 3000, top = 0, changed = false;
+  const body = {
+    clientHeight: 713,
+    get scrollHeight() { return height; },
+    get scrollTop() { return top; },
+    set scrollTop(v) { top = Math.max(0, Math.min(v, height - 713)); },
+    scrollTo(o) { this.scrollTop = o.top; },
+  };
+  const page = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  const timer = page.ctx.setTimeout;
+  page.ctx.setTimeout = (fn, ms) => { if (ms === 500 && top && !changed) { changed = true; height += by; top += by; } return timer(fn, ms); };
+  return page;
+}
+
+test('lines the slices up after content above the screen grows', async () => {
+  const { ctx, canvases, captureAt } = anchoredPage(300);
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 1013, 1726, 2439, 2587]);
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287], 'drew the rows the page grew by twice');
+});
+
+test('lines the slices up after content above the screen shrinks', async () => {
+  const { ctx, canvases, captureAt } = anchoredPage(-300);
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 413, 1126, 1839, 1987]);
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287], 'left out the rows the page shrank by');
+});
+
+test('stops after one slice when a scroll comes back with nothing', async () => {
+  // A scroll with no result reads as a page that won't advance, as it did
+  // before the scroll reported where it started. Without `from` in
+  // scrollPageTo's fallback, the slice is drawn at NaN and the stitch never
+  // ends (KAN-515).
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(3052, 767) });
+  const run = ctx.chrome.scripting.executeScript;
+  let scrolls = 0;
+  ctx.chrome.scripting.executeScript = async (o) => {
+    if (o.func.name !== 'scrollAndReport' || ++scrolls === 1) return run(o);
+    if (scrolls > 5) throw new Error('kept on scrolling');
+    return [{}];
+  };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0], 'went on past a scroll that came back with nothing');
+});
+
 // --- a stitch that stops part-way ------------------------------------------
 // The page was only put back after the last slice, so a slice that threw left
 // it scrolled to wherever the stitch stopped, with its pinned headers hidden.
