@@ -46,6 +46,11 @@ function smoothEl(scrollHeight, clientHeight) {
 // the capture are all mocked — nothing real is touched.
 function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixed, anchorOff = [], snapOn = [], failAt = 0, leaveAt = 0, leave = {}, frozenAt = 0, sameAt = [] }) {
   const canvases = [];
+  const styles = new Map(); // the <style> elements the capture puts in the page, by id
+  if (de) {
+    de.prepend = de.prepend || ((s) => styles.set(s.id, s));
+    de.appendChild = de.appendChild || ((s) => styles.set(s.id, s));
+  }
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; this.draws = []; canvases.push(this); }
     getContext() {
@@ -71,7 +76,6 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   let onMessage; // background.js's chrome.runtime.onMessage listener
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   let pageScriptTimeout; // CAPTURE_SCRIPT_TIMEOUT_MS, likewise
-  const styles = new Map(); // the <style> elements the capture puts in the page, by id
   const observers = []; // the MutationObservers the capture makes in the page
   const context = {
     console,
@@ -87,7 +91,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
       documentElement: de, body, scrollingElement: de, querySelectorAll: (sel) => (sel === '*' ? light : sel.includes('scroll-snap-type') ? snapOn : anchorOff),
       getElementById: (id) => styles.get(id) || null,
       createElement: () => ({ remove() { styles.delete(this.id); } }),
-      head: { appendChild: (s) => styles.set(s.id, s), prepend: (s) => styles.set(s.id, s) },
+      head: {},
     },
     // The capture's observers: what each one watches, until it is disconnected.
     // Nothing calls one back unless a test does, as the browser would once the
@@ -568,56 +572,46 @@ test('takes the anchoring rule back out when a slice fails', async () => {
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
-test("moves the anchoring rule a capture that died left behind first in <head>, with this capture's text, and takes it out", async () => {
+test("moves the anchoring rule a capture that died left behind first in the root element, with this capture's text, and takes it out", async () => {
   const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
   // The rule's text from before KAN-600, which leaves scroll snapping on (KAN-607).
   const left = { id: '__vsAnchor', textContent: '@layer{*{overflow-anchor:auto!important}}', remove() { styles.delete(this.id); } };
   styles.set(left.id, left);
-  const add = ctx.document.head.prepend;
+  const add = ctx.document.documentElement.prepend;
   const put = [];
-  ctx.document.head.prepend = (s) => { put.push(s); return add(s); };
+  ctx.document.documentElement.prepend = (s) => { put.push(s); return add(s); };
   const shoot = ctx.chrome.tabs.captureVisibleTab;
   const rules = [];
   ctx.chrome.tabs.captureVisibleTab = async (...a) => { rules.push(styles.get('__vsAnchor')?.textContent); return shoot(...a); };
   await ctx.captureFullPage(TAB);
   // The rule left behind, and not a second one, goes in front of any layer the
   // page has put before it since (KAN-611).
-  assert.deepStrictEqual(put, [left], 'did not move the rule left behind first in <head>');
+  assert.deepStrictEqual(put, [left], 'did not move the rule left behind first in the root element');
   assert.deepStrictEqual(rules, Array(4).fill('@layer{*{overflow-anchor:auto!important;scroll-snap-type:none!important}}'), "shot a slice with the rule's old text");
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
-test('puts the anchoring rule on the root element of a page with no <head>', async () => {
-  const de = el(3000, 800);
-  const { ctx, styles } = load({ de, body: el(3000, 3000), ih: 800, dpr: 1 });
-  ctx.document.head = null;
-  const inRoot = [];
-  de.prepend = (s) => { inRoot.push(s.id); styles.set(s.id, s); };
-  await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(inRoot, ['__vsAnchor'], 'did not put the rule on the root element');
-  assert.strictEqual(styles.size, 0, 'left the rule in the page');
-});
 
-test('puts the anchoring rule first in <head>, before any layer the page declares', async () => {
+test('puts the anchoring rule first in the root element, before any layer the page declares', async () => {
   const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
   const first = [];
-  const put = ctx.document.head.prepend;
-  ctx.document.head.prepend = (s) => { first.push(s.id); return put(s); };
+  const put = ctx.document.documentElement.prepend;
+  ctx.document.documentElement.prepend = (s) => { first.push(s.id); return put(s); };
   await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(first, ['__vsAnchor'], 'did not put the rule first in <head>');
+  assert.deepStrictEqual(first, ['__vsAnchor'], 'did not put the rule first in the root element');
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
-test('keeps the anchoring rule first in <head> while the page is shot', async () => {
-  // The page puts a style sheet of its own first in <head> while the second
-  // slice settles, and the browser calls the observers on <head> back once
+test('keeps the anchoring rule first in the root element while the page is shot', async () => {
+  // The page puts a style sheet of its own first in the root element while the second
+  // slice settles, and the browser calls the observers on the root element back once
   // the page's script has run. The rule stayed where it was, so the page's
   // layer was declared first for the rest of the capture, and one that turns
   // anchoring off kept it off (KAN-615).
   const body = el(3000, 713);
   const { ctx, styles, observers } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
-  const kids = []; // <head>'s children, in order
-  const head = ctx.document.head = {
+  const kids = []; // the root element's children, in order
+  const root = ctx.document.documentElement = {
     get firstChild() { return kids[0] || null; },
     prepend(n) { if (kids.includes(n)) kids.splice(kids.indexOf(n), 1); kids.unshift(n); if (n.id) styles.set(n.id, n); },
   };
@@ -626,8 +620,8 @@ test('keeps the anchoring rule first in <head> while the page is shot', async ()
   ctx.setTimeout = (fn, ms) => {
     if (ms === 500 && body.scrollTop === 713 && !put) {
       put = true;
-      head.prepend({}); // the page's own <style>
-      for (const o of observers) if (o.on === head) o.cb([], o);
+      root.prepend({}); // the page's own <style>
+      for (const o of observers) if (o.on === root) o.cb([], o);
     }
     return timer(fn, ms);
   };
@@ -636,11 +630,11 @@ test('keeps the anchoring rule first in <head> while the page is shot', async ()
   ctx.chrome.tabs.captureVisibleTab = async (...a) => { first.push(kids[0].id); return shoot(...a); };
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(first, Array(5).fill('__vsAnchor'), "shot a slice with the page's own style sheet in front of the rule");
-  assert.ok(observers.every((o) => !o.on), 'left <head> watched');
+  assert.ok(observers.every((o) => !o.on), 'left the root element watched');
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
-test('disconnects the observer a capture that died left on <head>', async () => {
+test('disconnects the observer a capture that died left on the root element', async () => {
   // Left connected, it would put the rule back once this capture's cleanup
   // took it out (KAN-615).
   const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
@@ -651,15 +645,15 @@ test('disconnects the observer a capture that died left on <head>', async () => 
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
-test('leaves the anchoring rule where it is when the page adds to <head> behind it', async () => {
+test('leaves the anchoring rule where it is when the page adds to the root element behind it', async () => {
   // The rule is still first, so the observer leaves it. Putting it first again
-  // anyway changes <head> too, which calls the observer back to do it again,
+  // anyway changes the root element too, which calls the observer back to do it again,
   // without end (KAN-615).
   const body = el(3000, 713);
   const { ctx, styles, observers } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
-  const kids = []; // <head>'s children, in order
-  const put = []; // what went first in <head>
-  const head = ctx.document.head = {
+  const kids = []; // the root element's children, in order
+  const put = []; // what went first in the root element
+  const root = ctx.document.documentElement = {
     get firstChild() { return kids[0] || null; },
     appendChild(n) { kids.push(n); },
     prepend(n) { put.push(n.id); if (kids.includes(n)) kids.splice(kids.indexOf(n), 1); kids.unshift(n); if (n.id) styles.set(n.id, n); },
@@ -669,8 +663,8 @@ test('leaves the anchoring rule where it is when the page adds to <head> behind 
   ctx.setTimeout = (fn, ms) => {
     if (ms === 500 && body.scrollTop === 713 && !added) {
       added = true;
-      head.appendChild({}); // the page's own <style>, last in <head>
-      for (const o of observers) if (o.on === head) o.cb([], o);
+      root.appendChild({}); // the page's own <style>, last in the root element
+      for (const o of observers) if (o.on === root) o.cb([], o);
     }
     return timer(fn, ms);
   };
