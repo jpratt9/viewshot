@@ -44,7 +44,7 @@ function smoothEl(scrollHeight, clientHeight) {
 
 // background.js in a sandbox wired to a fake page. chrome.*, the canvas, and
 // the capture are all mocked — nothing real is touched.
-function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixed, anchorOff = [], failAt = 0, leaveAt = 0, leave = {}, frozenAt = 0, sameAt = [] }) {
+function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixed, anchorOff = [], snapOn = [], failAt = 0, leaveAt = 0, leave = {}, frozenAt = 0, sameAt = [] }) {
   const canvases = [];
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; this.draws = []; canvases.push(this); }
@@ -80,9 +80,10 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
     HTMLElement,
     // light: what document.querySelectorAll('*') finds, which is all of `fixed`
     // unless a test puts some of them in a shadow root and passes its host.
-    // anchorOff: what the query for an inline `overflow-anchor` finds.
+    // anchorOff: what the query for an inline `overflow-anchor` finds, and
+    // snapOn: what the one for an inline `scroll-snap-type` finds.
     document: {
-      documentElement: de, body, scrollingElement: de, querySelectorAll: (sel) => (sel === '*' ? light : anchorOff),
+      documentElement: de, body, scrollingElement: de, querySelectorAll: (sel) => (sel === '*' ? light : sel.includes('scroll-snap-type') ? snapOn : anchorOff),
       getElementById: (id) => styles.get(id) || null,
       createElement: () => ({ remove() { styles.delete(this.id); } }),
       head: { appendChild: (s) => styles.set(s.id, s), prepend: (s) => styles.set(s.id, s) },
@@ -638,7 +639,9 @@ test("puts back the page's own inline anchoring a capture that died left on", as
 // landed, but the next one still asked for one screen past the last one's
 // target, so where the snap points pulled two slices apart, the rows between
 // them were never shot. Snapping is now off while the page is shot, in the
-// anchoring rule (KAN-600).
+// anchoring rule (KAN-600). No style sheet rule outranks an `!important` in a
+// style attribute, so an element with one gets the capture's own inline
+// `none !important`, as it does for anchoring (KAN-606).
 
 test('turns scroll snapping off while the page is shot', async () => {
   // Snap points every 500 px: a scroll lands on the nearest one, unless the
@@ -659,6 +662,40 @@ test('turns scroll snapping off while the page is shot', async () => {
   assert.deepStrictEqual(page.captureAt, [0, 713, 1426, 2139, 2287], 'shot the slices where the snap points pulled them');
   assert.deepStrictEqual(page.canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
   assert.strictEqual(page.canvases[page.canvases.length - 1].height, 3000, 'cut the image short');
+});
+
+// An element's inline `scroll-snap-type`, as [value, priority].
+const inlineSnap = (e) => [e.style.getPropertyValue('scroll-snap-type'), e.style.getPropertyPriority('scroll-snap-type')];
+
+test("turns scroll snapping off over a page's own `!important` in a style attribute, and puts it back after", async () => {
+  // `scroll-snap-type: y mandatory !important` in <html>'s and <body>'s style
+  // attributes outranks the capture's rule, so a scroll lands on the nearest
+  // snap point until the capture's own inline `none` has replaced both.
+  const snaps = [0, 500, 1000, 1500, 2000, 2287];
+  const htmlEl = positioned('static'), bodyEl = positioned('static');
+  for (const e of [htmlEl, bodyEl]) e.style.setProperty('scroll-snap-type', 'y mandatory', 'important');
+  const body = el(3000, 713);
+  const scroll = body.scrollTo;
+  body.scrollTo = function (o) {
+    const off = [htmlEl, bodyEl].every((e) => inlineSnap(e)[0] === 'none');
+    const top = off ? o.top : snaps.reduce((a, b) => (Math.abs(b - o.top) < Math.abs(a - o.top) ? b : a));
+    scroll.call(this, { ...o, top });
+  };
+  const page = load({ de: el(713, 713), body, ih: 713, dpr: 1, snapOn: [htmlEl, bodyEl] });
+  await page.ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(page.captureAt, [0, 713, 1426, 2139, 2287], 'shot the slices where the snap points pulled them');
+  assert.deepStrictEqual(page.canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
+  assert.strictEqual(page.canvases[page.canvases.length - 1].height, 3000, 'cut the image short');
+  assert.deepStrictEqual([htmlEl, bodyEl].map(inlineSnap), [['y mandatory', 'important'], ['y mandatory', 'important']], "did not put the page's own inline snapping back");
+});
+
+test("puts back the page's own inline snapping a capture that died left off", async () => {
+  const htmlEl = positioned('static');
+  htmlEl.style.setProperty('scroll-snap-type', 'none', 'important'); // the capture's own, left on
+  const { ctx } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1, snapOn: [htmlEl] });
+  ctx.window.__vsAnchored = [[htmlEl, 'y mandatory', 'scroll-snap-type']];
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(inlineSnap(htmlEl), ['y mandatory', 'important'], "left the page's own inline snapping off");
 });
 
 // --- a stitch that stops part-way ------------------------------------------

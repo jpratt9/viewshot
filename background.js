@@ -350,13 +350,17 @@ function measurePage() {
   // A page's own `!important` in a style attribute outranks every style sheet
   // rule, so each element with one gets the capture's own inline
   // `auto !important`, and the cleanup scroll puts the page's back (KAN-583).
+  // Snapping gets the same, with `none !important` (KAN-606).
   // A list a capture that died left behind is kept, so those get theirs back.
+  // One left before KAN-606 doesn't name the property: it only held anchoring.
   window.__vsAnchored = window.__vsAnchored || [];
-  for (const node of document.querySelectorAll('[style*="overflow-anchor" i]')) {
-    const value = node.style.getPropertyValue('overflow-anchor');
-    if (value === 'auto' || node.style.getPropertyPriority('overflow-anchor') !== 'important') continue;
-    window.__vsAnchored.push([node, value]);
-    node.style.setProperty('overflow-anchor', 'auto', 'important');
+  for (const [name, own] of [['overflow-anchor', 'auto'], ['scroll-snap-type', 'none']]) {
+    for (const node of document.querySelectorAll(`[style*="${name}" i]`)) {
+      const value = node.style.getPropertyValue(name);
+      if (value === own || node.style.getPropertyPriority(name) !== 'important') continue;
+      window.__vsAnchored.push([node, value, name]);
+      node.style.setProperty(name, own, 'important');
+    }
   }
   const de = document.documentElement, b = document.body;
   let el = de.scrollHeight > de.clientHeight + 1 ? de
@@ -405,7 +409,7 @@ function scrollAndReport(to, cleanup, last) {
   if (cleanup) {
     delete window.__vsScroller;
     document.getElementById('__vsAnchor')?.remove();
-    for (const [node, value] of window.__vsAnchored || []) node.style.setProperty('overflow-anchor', value, 'important');
+    for (const [node, value, name = 'overflow-anchor'] of window.__vsAnchored || []) node.style.setProperty(name, value, 'important');
     delete window.__vsAnchored;
   }
   const isRoot = el === de || el === b || el === document.scrollingElement;
