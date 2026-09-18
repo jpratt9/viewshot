@@ -499,7 +499,7 @@ async function captureFullPage(tab, format, popupId) {
       last = await scrollPageTo(tab, target - landed, false, last);
       const { from, actual: reached, total } = last;
       const moved = i > 0 ? from - landed : 0;
-      const actual = reached - moved;
+      let actual = reached - moved;
       m.total = total - moved;
       // The page refused to advance (unscrollable, or a scroller we can't drive).
       // Stop rather than stack the same viewport down the canvas.
@@ -579,7 +579,15 @@ async function captureFullPage(tab, format, popupId) {
           if (res.fixedReshot || res.stickyReshot) reshot = true;
           if (await hideStuckSticky(tab)) reshot = true;
         }
-        if (i === 0 || shot > 1 || !reshot) break;
+        if (i === 0 || shot > 1 || !reshot) {
+          if (frame.top !== reached && frame.total === total) {
+            const shift = frame.top - reached;
+            actual += shift;
+            landed += shift;
+            if (last) last.actual += shift;
+          }
+          break;
+        }
       }
       const bmp = await createImageBitmap(await (await fetch(url)).blob());
       
