@@ -662,10 +662,34 @@ async function markFixedAndSticky(tab, doFixed, fixedFirst, stickyFirst) {
     func: (doFixed, fixedFirst, stickyFirst) => {
       const fixedAdded = [];
       const stickyList = [];
-      const fixedList = fixedFirst ? [] : window.__shotHidden || [];
-      const stickyListed = stickyFirst ? [] : window.__shotSticky || [];
+      let fixedList = fixedFirst ? [] : window.__shotHidden || [];
+      let stickyListed = stickyFirst ? [] : window.__shotSticky || [];
       
       let fixedReshot = false;
+      let stickyReshot = false;
+
+      fixedList = fixedList.filter(([el, v]) => {
+        if (getComputedStyle(el).position !== 'fixed') {
+          if (el.style.visibility !== v) {
+            el.style.visibility = v;
+            fixedReshot = true;
+          }
+          return false;
+        }
+        return true;
+      });
+
+      stickyListed = stickyListed.filter(([el, v]) => {
+        if (getComputedStyle(el).position !== 'sticky') {
+          if (el.style.visibility !== v) {
+            el.style.visibility = v;
+            stickyReshot = true;
+          }
+          return false;
+        }
+        return true;
+      });
+
       const roots = [document];
       while (roots.length) {
         for (const el of roots.pop().querySelectorAll('*')) {
@@ -704,7 +728,7 @@ async function markFixedAndSticky(tab, doFixed, fixedFirst, stickyFirst) {
       const added = onPage.filter((el) => !stickyListed.some(([e]) => e === el)).map((el) => [el, el.style.visibility]);
       window.__shotSticky = [...stickyListed, ...added];
       
-      return { fixedReshot, stickyReshot: added.length > 0 };
+      return { fixedReshot, stickyReshot: stickyReshot || added.length > 0 };
     },
     args: [doFixed, fixedFirst, stickyFirst],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
