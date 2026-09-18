@@ -236,10 +236,21 @@ Two files change: `background.js` and `tests/fullpage.test.js`. Both diffs were 
 - **After the capture,** every run left the page back at 0, where it started.
 - **Runs that saved no file:** none.
 
-## Open questions
+## Open questions — settled
 
-1. **Should a page that scrolls itself in every settle have what its put-back sets off waited for too?** With the change it is put back twice and shot straight away, so its fade is still caught part-way: `settlescroll-again-fade` saves the same PNG with the change as without. Covering it means either putting the page back until it stops, which KAN-596 turned down, or waiting on something other than a settle, which the first Choice above weighs. Left for a follow-up ticket unless it belongs here.
-2. **Should this change also pin `!url` and `shot > 1` with tests?** Neither piece fails a test when taken out (see Choices). Pinning them takes a page that is put back and then turns a fixed element up after the shot, which none of the tests in the section does today.
+The plan left two questions open. Both are settled here, and neither changes the code shipped in `322887a`.
+
+1. **Should a page that scrolls itself in every settle have what its put-back sets off waited for too?** Not as part of KAN-599.
+   - **What the ticket covers:** a page that scrolls itself once while a slice settles, `settlescroll-fade`. `322887a` shoots it with the band's fade finished; see "Added when shipping".
+   - **Why this case is different:** the page scrolls itself again in the settle after the put-back. So it is put back a second time and shot straight away, as KAN-596 has it, and its fade is still caught part-way. `settlescroll-again-fade` saves the same PNG with the change as without.
+   - **Why it isn't covered here:** the only way the change has to get that page shot with the fade finished is to put it back until it stops, with a settle each time, and KAN-596 turned that down. Waiting on something other than a settle is the other way the first Choice weighs. It would need its own rule for what to wait for.
+   - **Follow-up:** KAN-604, filed from this question.
+2. **Should this change also pin `!url` and `shot > 1` with tests?** Yes, and it does.
+   - `322887a` adds a test for each. Each one fails when its piece is taken out; see "Added when shipping".
+   - The `!url` test pins a second shot for a fixed element being taken where the page scrolled to. That is KAN-605, pinned the way KAN-596's test pins KAN-598, so KAN-605's fix changes what that test expects.
+   - **Follow-up:** KAN-608, filed from this question, is done by those two tests and is closed.
+
+**This ticket blocks KAN-604 and KAN-605.**
 
 ## Added when shipping
 
