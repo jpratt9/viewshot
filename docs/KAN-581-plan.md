@@ -166,14 +166,23 @@ Two files change: `background.js` and `tests/fullpage.test.js`. Both diffs were 
 - **Runs that saved no file:** the first runs of `grow-noanchor-important` on both trees, and of `still` on `HEAD`. The capture never started and the page's offset log stayed empty, as happened in the KAN-575 plan. Each one saved a file when run again.
 - **The style added first in `<head>`:** on a copy of the changed tree with `.prepend(style)` in place of `.appendChild(style)`, `grow-noanchor-important-layer` is in place: offsets 713, 1013, 1726, 2439, 2587, and md5 `c5eebb48…`.
 
-## Open questions
+## Open questions — settled
 
-1. **Should the rule also beat an `!important` rule inside the page's own cascade layer?**
-   - The ticket names a more specific selector, and the change covers that case. `grow-noanchor-important-layer` still stitches the yellow band in twice with the change.
-   - Among `!important` declarations in layers, the layer declared first wins. The planned style comes after the page's `<head>` styles, so the page's layer is declared first.
-   - Adding the style first in `<head>` (`prepend` instead of `appendChild` at `background.js:335`) makes its layer the first one. With that, the page lines up; this was checked once in Chrome.
-   - It would no longer match how `setScrollbarHidden` adds its style. The fake documents would also need a `prepend`: `tests/fullpage.test.js:87`, `:414-416`, `:427` and `:1246`, and `tests/inner-scroller.test.js:26`. Without it, 84 tests fail.
-2. **Should an `overflow-anchor:none!important` in a page's `style` attribute be covered?**
-   - `grow-noanchor-important-inline` still stitches the yellow band in twice with the change.
-   - An `!important` in a `style` attribute beats every stylesheet rule, in a layer or not. Only the capture's own inline `!important` on those elements would win.
-   - That means finding those elements, and saving and restoring each one's own value, the way `window.__shotHidden` does for `visibility`.
+The plan left two questions open. Both are settled here, and neither changes the code shipped in `2baaa8e`.
+
+1. **Should the rule also beat an `!important` rule inside the page's own cascade layer?** Not as part of KAN-581.
+   - **What the ticket covers:** a page's own `!important` "on a more specific selector", reproduced with `html, body { overflow-anchor: none !important }`. `2baaa8e` lines that page up; see the `grow-noanchor-important` runs above.
+   - **Why this case is different:** a rule inside the page's own layer wins on layer order, not on specificity. `grow-noanchor-important-layer` still stitches the yellow band in twice.
+   - **What beating it would take:** adding the style first in `<head>` (`prepend` instead of `appendChild`).
+     - That lined the page up in one Chrome run.
+     - It would no longer match how `setScrollbarHidden` adds its style.
+     - The fake documents in the tests would need a `prepend`. Without one, 84 tests fail.
+   - **Follow-up:** KAN-582, filed from this question.
+2. **Should an `overflow-anchor:none!important` in a page's `style` attribute be covered?** Not as part of KAN-581.
+   - **Why no rule can fix it:** a `style` attribute's `!important` beats every style sheet rule, whether in a layer or not. `grow-noanchor-important-inline` still stitches the yellow band in twice.
+   - **What beating it would take:** the capture setting its own inline `!important` on those elements. That means a new page pass, which has to:
+     - find those elements;
+     - save each one's own value and put it back afterwards, the way `window.__shotHidden` does for `visibility`.
+   - **Follow-up:** KAN-583, filed from this question.
+
+**This ticket blocks both.**
