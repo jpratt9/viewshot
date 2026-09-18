@@ -356,7 +356,13 @@ function measurePage() {
   // it. One a capture that died left connected is disconnected here, or it
   // would put the rule back once this capture's cleanup took it out.
   window.__vsAnchorObserver?.disconnect();
-  window.__vsAnchorObserver = new MutationObserver(() => { if (root.firstChild !== style) root.prepend(style); });
+  let __vsAnchorMoves = 0;
+  window.__vsAnchorObserver = new MutationObserver(() => {
+    if (root.firstChild !== style) {
+      if (++__vsAnchorMoves > 10) window.__vsAnchorObserver.disconnect();
+      else root.prepend(style);
+    }
+  });
   window.__vsAnchorObserver.observe(root, { childList: true });
   // A page's own `!important` in a style attribute outranks every style sheet
   // rule, so each element with one gets the capture's own inline

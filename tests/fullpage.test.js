@@ -1663,3 +1663,38 @@ test('names the popup that asked for the full page in its progress, and none for
   await vm.runInContext('runGate', ctx); // both have finished
   assert.deepStrictEqual(sent.filter((m) => m.type === 'capture-progress').map((m) => m.popupId), [undefined, undefined, undefined, undefined, 'popup-1', 'popup-1', 'popup-1', 'popup-1']);
 });
+
+test('gives up putting the rule back if the page fights it without end', async () => {
+  const body = el(3000, 713);
+  const { ctx, styles, observers } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  const kids = [];
+  const put = [];
+  const root = ctx.document.documentElement = {
+    get firstChild() { return kids[0] || null; },
+    appendChild(n) { kids.push(n); },
+    prepend(n) {
+      put.push(n.id);
+      if (kids.includes(n)) kids.splice(kids.indexOf(n), 1);
+      kids.unshift(n);
+      if (n.id) styles.set(n.id, n);
+      if (n.id === '__vsAnchor' && added) {
+        kids.unshift({ id: 'page-style' });
+        for (const o of observers) if (o.on === root) o.cb([], o);
+      }
+    },
+  };
+  let added = false;
+  const timer = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms) => {
+    if (ms === 500 && body.scrollTop === 713 && !added) {
+      added = true;
+      kids.unshift({ id: 'page-style' });
+      for (const o of observers) if (o.on === root) o.cb([], o);
+    }
+    return timer(fn, ms);
+  };
+  await ctx.captureFullPage(TAB);
+  // Initial prepend (1) + up to 10 moves (10 limit) = 11.
+  assert.strictEqual(put.length, 11, 'fought the page without end');
+  assert.strictEqual(styles.size, 0, 'left the rule in the page');
+});
