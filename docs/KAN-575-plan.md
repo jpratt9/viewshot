@@ -242,14 +242,15 @@ Three files change: `background.js`, `tests/fullpage.test.js` and `tests/inner-s
 - The first runs of `grow` and `grow-noanchor-important` on the changed tree saved no file. The capture never started, and the page's offset log was empty.
 - Both were run again, and both saved a file.
 
-## Open questions
+## Open questions — settled
 
-1. **Is it acceptable that pages which turn anchoring off and keep their own rows in place stitch misaligned from now on?**
-   - `grow-compensate` shows it:
-     - It lines up on `HEAD`.
-     - With the change, Chrome's anchoring and the page's own adjustment both move the offset (713 → 1313), and the image leaves out 300 rows.
-   - Pages turn anchoring off for exactly this reason: they adjust the offset themselves, as a chat or a feed does when it puts content in above and adds its height to the offset.
-   - The ticket names the rule planned here as one of two ways. The other, reading one element's place in the page on every slice, would leave these pages alone. It has a cost of its own:
-     - it has to catch rows that move on screen while a slice settles, before its shot, which means a new page pass before every shot;
-     - it needs a rule for which element to read.
-   - That way is not planned or tried here.
+The plan left one question open. It is settled here, and it doesn't change the code shipped in `6a35d8c`.
+
+1. **Is it acceptable that pages which turn anchoring off and keep their own rows in place stitch misaligned from now on?** Yes, as part of KAN-575.
+   - **The ticket names forcing anchoring on as one of its two ways.** The settled question in the KAN-515 plan already gives this way's cost: it "changes how the page itself behaves while it is shot". `grow-compensate` is that cost:
+     - it lines up on `de828de`;
+     - with the change, Chrome's anchoring and the page's own adjustment both move the offset (713 → 1313), and the image leaves out 300 rows.
+   - **`6a35d8c` lines up the ticket's own case:** content above the screen growing or shrinking on a page with anchoring off. It leaves pages with anchoring on byte-identical.
+   - **The pages it breaks are KAN-580, filed from this question.** They are pages that turn anchoring off and move their own offset. The ticket's other way, reading one element's place in the page on every slice, is the one that would leave them alone.
+   - **A page's own `!important` rule is KAN-581.**
+   - **This ticket blocks both.**
