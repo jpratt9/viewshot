@@ -6,6 +6,7 @@ let recChanged = false; // the storage listener at the bottom has seen `rec` cha
 const edited = new Set(); // input can precede change while startup is pending
 let ready = false;
 let capturing = false; // a Visible or Full page this popup sent hasn't been answered yet (KAN-220)
+const popupId = crypto.randomUUID(); // sent with this popup's captures; a Full page's progress carries it back (KAN-552)
 
 // One box at a time: an error, or how the capture is going.
 const showError = (text) => { $('status').hidden = true; const e = $('err'); e.textContent = text; e.hidden = false; };
@@ -184,7 +185,7 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
       // press met a worker that was already awake.
       let res;
       try {
-        res = await chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, tabId: activeTab?.id, opts });
+        res = await chrome.runtime.sendMessage({ type: 'capture', mode: btn.dataset.mode, tabId: activeTab?.id, opts, popupId });
       } catch (e) {
         console.error('[ViewShot] capture message failed:', e);
         res = { error: 'Couldn’t reach the extension worker. Try again.' };
@@ -237,9 +238,10 @@ const startup = load().catch(() => {
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // How far a Full page has got (KAN-220). Only while this popup's own capture
-  // runs: the worker sends it for a shortcut's capture too.
-  if (msg?.type === 'capture-progress') { if (capturing) showStatus(`Capturing screen ${msg.screen} of ${msg.screens}…`); return; }
+  // How far a Full page has got (KAN-220). Only this popup's own capture's: the
+  // worker sends it for a shortcut's capture too, and for one this popup's is
+  // waiting behind (KAN-552).
+  if (msg?.type === 'capture-progress') { if (capturing && msg.popupId === popupId) showStatus(`Capturing screen ${msg.screen} of ${msg.screens}…`); return; }
   if (msg?.type === 'shot-clipboard') {
     (async () => {
       try {

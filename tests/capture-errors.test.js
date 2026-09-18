@@ -306,6 +306,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
     },
     localStorage: { getItem: () => null, setItem: () => {} },
+    crypto: { randomUUID: () => 'popup-1' }, // the id this popup's captures carry (KAN-552)
   };
   vm.createContext(context);
   vm.runInContext(read('popup.js'), context);
@@ -2288,7 +2289,7 @@ test('the popup shows which screen Full page is on, and only for its own capture
   assert.ok(!p.els.status || p.els.status.hidden, 'showed progress for a capture this popup never sent');
   const done = p.click('fullpage');
   await settle();
-  p.message({ type: 'capture-progress', screen: 2, screens: 3 });
+  p.message({ type: 'capture-progress', popupId: 'popup-1', screen: 2, screens: 3 });
   assert.strictEqual(p.els.status.textContent, 'Capturing screen 2 of 3…');
   answer(true);
   await done;
@@ -2306,4 +2307,26 @@ test('a capture that fails does not hold up the one waiting behind it', async ()
   await assert.rejects(first, /No tab with id: 99/);
   await second;
   assert.strictEqual(bg.shots.length, 1, 'the second capture never ran');
+});
+
+// --- whose capture the progress is from (KAN-552) ---------------------------
+// A capture waits for the one before it to finish (KAN-213), and a Full page's
+// progress didn't say whose capture it was: a popup whose capture waited
+// behind a shortcut's Full page showed that Full page's screens as its own.
+
+test('the popup shows no other capture\'s screens while its own waits its turn', async () => {
+  let answer;
+  const p = loadPopup('https://a.com/x', { reply: new Promise((r) => { answer = r; }) });
+  await p.ready();
+  const done = p.click('fullpage');
+  await settle();
+  assert.strictEqual(p.sent[0].popupId, 'popup-1', 'the worker can\'t say which screens are this popup\'s');
+  p.message({ type: 'capture-progress', screen: 3, screens: 6 }); // a shortcut's Full page, which this one waits behind
+  p.message({ type: 'capture-progress', popupId: 'popup-0', screen: 4, screens: 6 }); // one from a popup that has since closed
+  assert.strictEqual(p.els.status.textContent, 'Capturing…', 'showed another capture\'s screens as its own');
+  p.message({ type: 'capture-progress', popupId: 'popup-1', screen: 1, screens: 2 }); // its own, once its turn comes
+  assert.strictEqual(p.els.status.textContent, 'Capturing screen 1 of 2…');
+  answer(true);
+  await done;
+  assert.strictEqual(p.els.status.textContent, 'Saved.');
 });

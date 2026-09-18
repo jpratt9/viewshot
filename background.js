@@ -14,7 +14,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // and the popup says which (KAN-220). The badge still flashes: the popup can
   // have been closed by then.
   else if (msg?.type === 'capture') {
-    runCapture(msg.mode, msg.opts, msg.tabId).then(() => sendResponse(true), (e) => { captureFailed(e); sendResponse({ error: e.message || String(e) }); });
+    runCapture(msg.mode, msg.opts, msg.tabId, msg.popupId).then(() => sendResponse(true), (e) => { captureFailed(e); sendResponse({ error: e.message || String(e) }); });
     return true;
   }
   else if (msg?.type === 'rec-start') {
@@ -255,7 +255,7 @@ function captureFailed(e) {
 // deadline (CAPTURE_SCRIPT_TIMEOUT_MS, CAPTURE_TIMEOUT_MS), so a page or a
 // shot that never answers can't hold the others up for good.
 let runGate = Promise.resolve();
-function runCapture(mode, opts, tabId) {
+function runCapture(mode, opts, tabId, popupId) {
   const run = runGate.then(async () => {
     const tab = await getActiveTab(tabId);
     if (!tab) throw new Error('No tab to capture'); // flash the badge rather than do nothing
@@ -272,7 +272,7 @@ function runCapture(mode, opts, tabId) {
     if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
     try {
       if (mode === 'visible') png = await captureVisible(tab.windowId);
-      else if (mode === 'fullpage') png = await captureFullPage(tab, opts.toClipboard ? 'png' : opts.format);
+      else if (mode === 'fullpage') png = await captureFullPage(tab, opts.toClipboard ? 'png' : opts.format, popupId);
     } finally {
       if (opts.hideScrollbar) await setScrollbarHidden(tab, false); // restore
     }
@@ -399,7 +399,7 @@ async function scrollPageTo(tab, y, cleanup = false) {
 // stitch only found out after it had scrolled every screen.
 const MAX_SIDE = { png: 65535, jpg: 65500, webp: 16383 };
 const MAX_AREA = 268435456;
-async function captureFullPage(tab, format) {
+async function captureFullPage(tab, format, popupId) {
   const [{ result: m }] = await scriptWithTimeout({
     target: { tabId: tab.id },
     func: measurePage,
@@ -432,7 +432,10 @@ async function captureFullPage(tab, format) {
       // Which screen this is, out of how many the page is now tall enough for,
       // for the popup (KAN-220). Not waited for, and nothing may be listening:
       // a shortcut's capture has no popup, and a popup can close mid-stitch.
-      chrome.runtime.sendMessage({ type: 'capture-progress', screen: i + 1, screens: Math.max(i + 1, Math.ceil(m.total / m.vh)) }).catch(() => {});
+      // popupId says which popup asked for this capture (none for a
+      // shortcut's), so a popup whose capture waits its turn behind this one
+      // doesn't show these screens as its own (KAN-552).
+      chrome.runtime.sendMessage({ type: 'capture-progress', popupId, screen: i + 1, screens: Math.max(i + 1, Math.ceil(m.total / m.vh)) }).catch(() => {});
       // The sticky elements that stick to the page, listed on the first slice
       // and added to on every later one (KAN-503). From here on there is
       // something for the finally to put back.

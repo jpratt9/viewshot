@@ -70,7 +70,7 @@ function bootPopup(store = {}, cache = null, pending = {}) {
     getItem: (k) => (k === 'opts' ? mirror.value : null),
     setItem: (k, v) => { if (k === 'opts') mirror.value = v; },
   };
-  const context = { document, chrome, console, Math, parseFloat, JSON, localStorage };
+  const context = { document, chrome, console, Math, parseFloat, JSON, localStorage, crypto };
   vm.createContext(context);
   vm.runInContext(read('popup.js'), context);
   return {

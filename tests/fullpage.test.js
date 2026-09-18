@@ -942,8 +942,8 @@ test('saves a page flat enough to shoot the same slice three times over', async 
 
 test('tells the popup which screen it is shooting, out of how many', async () => {
   const { ctx, sent } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
-  await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(sent, [1, 2, 3, 4].map((screen) => ({ type: 'capture-progress', screen, screens: 4 })));
+  await ctx.captureFullPage(TAB, 'png', 'popup-1');
+  assert.deepStrictEqual(sent, [1, 2, 3, 4].map((screen) => ({ type: 'capture-progress', popupId: 'popup-1', screen, screens: 4 })));
 });
 
 // A page that loads more once it has been scrolled: `before` tall at the top,
@@ -1065,4 +1065,18 @@ test('finishes a Region shot before a full page asked for after it starts', asyn
   assert.deepStrictEqual(bar.shots, [true, true, true, true, true], 'the Region took the scrollbar style away during the stitch');
   assert.strictEqual(saved.length, 2);
   assert.strictEqual(bar.inPlace(), false, 'left the scrollbar hidden');
+});
+
+// --- whose capture the progress is from (KAN-552) ---------------------------
+// A capture waits for the one before it to finish (KAN-213), and a Full page's
+// progress didn't say whose capture it was: a popup whose capture waited
+// behind a shortcut's Full page showed that Full page's screens as its own.
+
+test('names the popup that asked for the full page in its progress, and none for a shortcut\'s', async () => {
+  const { ctx, sent, message } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  forRunCapture(ctx);
+  ctx.runCapture('fullpage', RUN_OPTS, TAB.id); // as a shortcut starts it
+  message({ type: 'capture', mode: 'fullpage', opts: RUN_OPTS, tabId: TAB.id, popupId: 'popup-1' }); // waits its turn behind it
+  await vm.runInContext('runGate', ctx); // both have finished
+  assert.deepStrictEqual(sent.map((m) => m.popupId), [undefined, undefined, undefined, undefined, 'popup-1', 'popup-1', 'popup-1', 'popup-1']);
 });

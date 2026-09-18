@@ -183,7 +183,7 @@ function loadPopup() {
   const sent = [];
   let closed = 0;
   const context = {
-    console, Math, parseFloat, JSON,
+    console, Math, parseFloat, JSON, crypto,
     window: { close: () => { closed++; } },
     document: {
       getElementById: (id) => (els[id] = els[id] || makeEl()),

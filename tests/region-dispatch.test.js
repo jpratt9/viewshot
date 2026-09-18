@@ -76,7 +76,7 @@ function loadPopup(store = { opts: { format: 'jpg' } }) {
 
   const localStorage = { getItem: () => null, setItem: () => {} };
   const context = {
-    document, chrome, console: { ...console, error: () => {} }, Math, parseFloat, JSON, localStorage,
+    document, chrome, console: { ...console, error: () => {} }, Math, parseFloat, JSON, localStorage, crypto,
     window: { close: () => { closed = true; } },
   };
   vm.createContext(context);
