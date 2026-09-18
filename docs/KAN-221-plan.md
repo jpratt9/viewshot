@@ -271,12 +271,17 @@ Choices:
 
 - **The ticket's line reference is out of date.** It says the video-only request is at `offscreen.js:44`; it is at `offscreen.js:75` now.
 
-## Open questions
+## Open questions — settled
 
-1. **Should MP4 get the option too?** The ticket says WebM, and this plan does only WebM.
+Both were settled on what the ticket and the repo say. Neither changes the code that shipped.
+
+1. **Should MP4 get the option too?** Not in this change. The ticket asks for WebM, and it was written before MP4 was added. MP4 is filed as **KAN-544**, which is blocked by KAN-221.
    - For MP4 as well: the row would show for MP4, and the check in `offscreen.js` would become `format !== 'gif'`.
    - `pickMime` would also have to name an audio codec QuickTime plays, `video/mp4;codecs=avc1,mp4a.40.2` (AAC). That would need its own check in Chrome.
-2. **On or off by default?** The plan has it off (`audio: false` in both `DEFAULTS`). On is the same plan with `true` in both.
+2. **On or off by default?** Off, as shipped (`audio: false` in both `DEFAULTS`):
+   - The ticket asks for "an option to include the tab's audio", which is something a user turns on.
+   - Recordings have always been video only, and settings saved before the option existed keep recording that way.
+   - Alt+Shift+S records from the saved settings without opening the popup. On by default would start capturing the tab's sound, and playing it back through the offscreen document, for shortcut users who have never seen the checkbox.
 
 ## Added when shipping
 
@@ -285,7 +290,7 @@ Choices:
   - The three cases are: saved `audio: true`, saved `audio: false`, and saved settings from before the option existed, which fall back to `DEFAULTS` and get no audio.
   - `recordingBrowser` takes the saved settings as a third argument.
   - All three pass with this change, and all three fail with the `background.js` it replaces.
-- **Open question 1 is now KAN-544** ("MP4 recordings can't include the tab's audio"), which is blocked by this ticket. Open question 2 is unanswered, so the option ships off.
+- **Open question 1 is now KAN-544** ("MP4 recordings can't include the tab's audio"), which is blocked by this ticket. The option ships off. Both questions are settled above.
 - **Step 4 wasn't fully run.** It ran in headed Chrome 153.0.8010.48, and every case it covered came out as expected. It didn't cover:
   - listening to the tab;
   - Alt+Shift+S (covered by the tests above instead);
