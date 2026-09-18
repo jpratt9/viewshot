@@ -216,3 +216,18 @@ chrome.runtime.sendMessage({ type: 'rec-check' }).catch(() => { /* a worker that
 const startup = load().catch(() => {
   showError('Couldn’t load settings. Close and reopen ViewShot to try again.');
 });
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.type === 'shot-clipboard') {
+    (async () => {
+      try {
+        const blob = await (await fetch(msg.dataUrl)).blob();
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        sendResponse('done');
+      } catch (e) {
+        sendResponse({ error: e.message || String(e) });
+      }
+    })();
+    return true;
+  }
+});

@@ -194,7 +194,7 @@ function loadPopup() {
       tabs: { query: async () => [TAB], create: () => {} },
       storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({}), set: async () => {}, onChanged: { addListener() {} } } },
       // The popup's startup rec-check is the worker's business, not this file's.
-      runtime: { sendMessage: async (m) => { if (m.type !== 'rec-check') sent.push(m); } },
+      runtime: { onMessage: { addListener: () => {} }, sendMessage: async (m) => { if (m.type !== 'rec-check') sent.push(m); } },
       tabCapture: { getMediaStreamId: async () => 'sid' },
     },
     localStorage: { getItem: () => null, setItem: () => {} },

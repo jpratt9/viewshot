@@ -63,7 +63,7 @@ function bootPopup(store = {}, cache = null, pending = {}) {
       },
     },
     // The popup's startup rec-check is the worker's business, not this file's.
-    runtime: { sendMessage: async () => {} },
+    runtime: { onMessage: { addListener: () => {} }, sendMessage: async () => {} },
     tabCapture: { getMediaStreamId: async () => 'sid' },
   };
   const localStorage = {

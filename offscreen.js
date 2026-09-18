@@ -21,18 +21,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Answered so the worker can close this document once the write is done —
   // an offscreen document shares its renderer main thread with the popup, and
   // Chrome won't paint the popup until that thread lets its onload finish.
-  if (msg?.type === 'shot-clipboard') { copyToClipboard(msg.dataUrl).then(() => sendResponse('done')); return true; }
+  if (msg?.type === 'shot-clipboard') { copyToClipboard(msg.dataUrl).then(() => sendResponse('done')).catch((e) => sendResponse({ error: e.message || String(e) })); return true; }
   else if (msg?.type === 'rec-start-offscreen') { log('rec-start-offscreen, format=', msg.format, 'dims=', msg.width, 'x', msg.height, msg.cssPx ? '(css px)' : ''); startRecording(msg.streamId, msg.format, msg.width, msg.height, msg.cssPx).catch(onRecError); }
   else if (msg?.type === 'rec-stop-offscreen') { log('rec-stop-offscreen, filename=', msg.filename); stopRecording(msg.filename); }
 });
 
 async function copyToClipboard(dataUrl) {
-  try {
-    const blob = await (await fetch(dataUrl)).blob();
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-  } catch (e) {
-    console.error('[ViewShot] clipboard write failed:', e);
-  }
+  const blob = await (await fetch(dataUrl)).blob();
+  await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
 }
 
 // ---- recording ----

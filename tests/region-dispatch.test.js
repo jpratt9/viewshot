@@ -70,7 +70,7 @@ function loadPopup(store = { opts: { format: 'jpg' } }) {
     },
     // The popup's startup rec-check only has to reach the worker, so it is
     // counted rather than left in `sent` with the messages a click sends.
-    runtime: { sendMessage: (msg) => { if (msg.type === 'rec-check') checks++; else sent.push(msg); return ack; } },
+    runtime: { onMessage: { addListener: () => {} }, sendMessage: (msg) => { if (msg.type === 'rec-check') checks++; else sent.push(msg); return ack; } },
     tabCapture: { getMediaStreamId: async () => 'sid' },
   };
 

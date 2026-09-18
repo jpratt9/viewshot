@@ -568,14 +568,42 @@ async function closeOffscreen() {
 // ---- clipboard via the offscreen document ----
 // Copies still writing: from their ensureOffscreen until the document answers.
 let copiesPending = 0;
-async function copyImage(pngDataUrl) {
-  // The offscreen listener answers only after the clipboard write resolves, so
-  // awaiting here means it is safe to tear the document down straight after.
-  // A new document that never answered is closed too.
+async function copyImage(pngDataUrl, tabId) {
   copiesPending++;
   try {
+    // 1. Try the popup
+    const popupRes = await chrome.runtime.sendMessage({ type: 'shot-clipboard', dataUrl: pngDataUrl }).catch(() => null);
+    if (popupRes === 'done') return;
+    if (popupRes?.error) throw new Error(popupRes.error);
+
+    // 2. Try the active tab
+    if (tabId) {
+      const tabRes = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (dataUrl) => {
+          try {
+            const blob = await (await fetch(dataUrl)).blob();
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+            return 'done';
+          } catch (e) {
+            return { error: e.message || String(e) };
+          }
+        },
+        args: [pngDataUrl]
+      }).catch(() => null);
+      
+      const res = tabRes && tabRes[0] && tabRes[0].result;
+      if (res === 'done') return;
+      if (res?.error) throw new Error(res.error);
+    }
+
+    // 3. Try the offscreen document as a fallback (will fail but will report the error)
     await ensureOffscreen();
-    await chrome.runtime.sendMessage({ type: 'shot-clipboard', dataUrl: pngDataUrl });
+    const offscreenRes = await chrome.runtime.sendMessage({ type: 'shot-clipboard', dataUrl: pngDataUrl }).catch(() => null);
+    if (offscreenRes === 'done') return;
+    if (offscreenRes?.error) throw new Error(offscreenRes.error);
+    
+    throw new Error('Clipboard copy failed in all contexts');
   } finally {
     copiesPending--;
     await closeOffscreen();
@@ -803,7 +831,7 @@ async function blobToDataURL(blob) {
 
 async function saveCapture(png, opts, tab) {
   if (opts.toClipboard) {
-    await copyImage(png);
+    await copyImage(png, tab?.id);
   } else {
     const { dataUrl, ext } = await encode(png, opts);
     await chrome.downloads.download({ url: dataUrl, filename: buildName(opts.filename, ext, tab), saveAs: false });

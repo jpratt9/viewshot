@@ -25,6 +25,10 @@ function load({ hasDoc = false, rec = null, createRejects = false, docId = null 
         // never answers the question - it is only ever asked of a document a
         // recording was written down against.
         if (m.type === 'offscreen-id') return docId;
+        if (m.type === 'shot-clipboard') {
+          if (!docExists) throw new Error('Could not establish connection. Receiving end does not exist.');
+          return 'done';
+        }
         return m.type === 'offscreen-ping' ? 'pong' : 'done';
       },
     },
@@ -51,7 +55,7 @@ function load({ hasDoc = false, rec = null, createRejects = false, docId = null 
     },
   };
   const context = {
-    chrome, console, URL, btoa, Date, clearTimeout,
+    chrome, console, URL, btoa, Date, clearTimeout, fetch: async () => ({ blob: async () => ({}) }), ClipboardItem: class {}, navigator: { clipboard: { write: async () => {} } }, fetch: async () => ({ blob: async () => ({}) }), ClipboardItem: class {}, navigator: { clipboard: { write: async () => {} } }, fetch: async () => ({ blob: async () => ({}) }), ClipboardItem: class {}, navigator: { clipboard: { write: async () => {} } }, fetch: async () => ({ blob: async () => ({}) }), ClipboardItem: class {}, navigator: { clipboard: { write: async () => {} } },
     setTimeout: (fn) => fn(), // collapse the ping-poll backoff
   };
   vm.createContext(context);
@@ -176,7 +180,10 @@ test('a saved recording leaves the document to a clipboard write still under way
   let answer;
   ctx.chrome.runtime.sendMessage = async (m) => {
     calls.sent.push(m);
-    if (m.type === 'shot-clipboard') return new Promise((r) => { answer = r; });
+    if (m.type === 'shot-clipboard') {
+      if (calls.create === 0) throw new Error('Receiving end does not exist.');
+      return new Promise((r) => { answer = r; });
+    }
     return m.type === 'offscreen-ping' ? 'pong' : 'done';
   };
   const copy = ctx.copyImage(PNG);
