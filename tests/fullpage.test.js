@@ -407,9 +407,12 @@ test('lines the slices up on a page that scrolls itself between them', async () 
 // had settled. A page that scrolled itself while the slice settled was shot
 // where it scrolled to: the rows between were left out, and the ones past them
 // went in twice. The frame check now says where the page is, and a page that
-// has moved and is as tall as it was goes back, once (KAN-592). It is shot
+// has moved and is as tall as it was goes back (KAN-592). It was then shot
 // without settling again: a page that scrolls itself on every settle did it
-// again, and was shot where it scrolled to (KAN-596).
+// again, and was shot where it scrolled to (KAN-596). That shot caught what
+// the put-back set off, a fade-in for one, part-way, so the slice now settles
+// once more first. A page that moves again in that settle goes back a second
+// time, and is shot without settling (KAN-599).
 
 test('puts a page that scrolls itself while a slice settles back before it shoots that slice', async () => {
   const body = el(3000, 713);
@@ -437,7 +440,7 @@ test('shoots a slice it puts back before the page scrolls itself again', async (
   assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287], 'let the page settle again, and shot it where it scrolled itself to');
   assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
   assert.strictEqual(canvases[canvases.length - 1].height, 3000, 'cut the image short');
-  assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 7, 'did not put the page back once');
+  assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 8, 'did not put the page back twice');
 });
 
 test('shoots a slice where the page is when it scrolls itself again before that shot', async () => {
@@ -450,8 +453,75 @@ test('shoots a slice where the page is when it scrolls itself again before that 
   const frame = ctx.requestAnimationFrame;
   ctx.requestAnimationFrame = (cb) => { if (body.scrollTop === 713 && scrolls < 5) { scrolls++; body.scrollTop += 200; } return frame(cb); };
   await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(captureAt, [0, 913, 1426, 2139, 2287], 'put the page back more than once');
-  assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 7, 'did not put the page back once');
+  assert.deepStrictEqual(captureAt, [0, 913, 1426, 2139, 2287], 'put the page back more than twice');
+  assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 8, 'did not put the page back twice');
+});
+
+test('lets a slice it puts back settle before it shoots it', async () => {
+  // A page that scrolls itself 200 px down while the second slice settles,
+  // with a band that fades in each time a scroll brings it back on screen.
+  // The fade only finishes in a settle that no scroll cuts short.
+  const body = el(3000, 713);
+  const { ctx, captureAt } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  let scrolled = false, seen = 0, faded = true;
+  const fadedAt = []; // whether the band had finished fading in, at each shot
+  const look = () => { if (body.scrollTop !== seen) { seen = body.scrollTop; faded = false; } };
+  const timer = ctx.setTimeout, shoot = ctx.chrome.tabs.captureVisibleTab;
+  ctx.setTimeout = (fn, ms) => {
+    look();
+    if (ms === 500) {
+      if (body.scrollTop === 713 && !scrolled) { scrolled = true; body.scrollTop += 200; look(); } else faded = true;
+    }
+    return timer(fn, ms);
+  };
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => { look(); fadedAt.push(faded); return shoot(...a); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287], 'shot the second slice where the page scrolled itself to');
+  assert.deepStrictEqual(fadedAt, [true, true, true, true, true], 'shot the slice it put back before the band faded in');
+});
+
+test('shoots a slice again where the page is when it scrolls itself while that second shot settles', async () => {
+  // A banner turns up after the second slice's last fixed hide, so that slice
+  // is shot again (KAN-525), and the page scrolls itself 200 px down while
+  // that second shot settles. A slice is only put back before it is shot, so
+  // the second shot is taken where the page scrolled to (KAN-605).
+  const body = el(3000, 713);
+  const banner = positioned('fixed', 663, 713);
+  const light = []; // what the page has in it
+  const { ctx, captureAt } = load({ de: el(713, 713), body, ih: 713, dpr: 1, fixed: [banner], light });
+  const frame = ctx.requestAnimationFrame;
+  ctx.requestAnimationFrame = (cb) => { if (body.scrollTop === 713 && !light.length) light.push(banner); return frame(cb); };
+  let scrolled = false;
+  const timer = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms) => { if (ms === 500 && light.length && body.scrollTop === 713 && !scrolled) { scrolled = true; body.scrollTop += 200; } return timer(fn, ms); };
+  // Which shots the stitch draws: each one's URL carries its number.
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => `${await shoot(...a)}#${captureAt.length}`;
+  const drawn = [];
+  const get = ctx.fetch;
+  ctx.fetch = (url) => { drawn.push(Number(url.split('#')[1])); return get(url); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 913, 1426, 2139, 2287], 'put the page back after the slice was shot');
+  assert.deepStrictEqual(drawn, [1, 3, 4, 5, 6]);
+});
+
+test('shoots a slice it put back twice only once, even when a fixed element turns up after that shot', async () => {
+  // A page that scrolls itself 200 px down each time the second slice
+  // settles, five times at most, so that slice is put back twice and shot on
+  // its third round. A banner turns up in the frame that shot waits for,
+  // after its last fixed hide. A slice that was put back isn't shot again.
+  const body = el(3000, 713);
+  const banner = positioned('fixed', 663, 713);
+  const light = []; // what the page has in it
+  const { ctx, captureAt, scriptCalls } = load({ de: el(713, 713), body, ih: 713, dpr: 1, fixed: [banner], light });
+  const frame = ctx.requestAnimationFrame;
+  ctx.requestAnimationFrame = (cb) => { if (body.scrollTop === 713 && !light.length) light.push(banner); return frame(cb); };
+  let scrolls = 0;
+  const timer = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms) => { if (ms === 500 && body.scrollTop === 713 && scrolls < 5) { scrolls++; body.scrollTop += 200; } return timer(fn, ms); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287], 'shot the slice it put back twice again');
+  assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 8, 'did not put the page back twice');
 });
 
 // --- pages that turn scroll anchoring off ----------------------------------
