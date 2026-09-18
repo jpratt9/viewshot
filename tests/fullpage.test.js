@@ -556,19 +556,21 @@ test('takes the anchoring rule back out when a slice fails', async () => {
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
 
-test("uses the anchoring rule a capture that died left behind, with this capture's text, and takes it out", async () => {
+test("moves the anchoring rule a capture that died left behind first in <head>, with this capture's text, and takes it out", async () => {
   const { ctx, styles } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
   // The rule's text from before KAN-600, which leaves scroll snapping on (KAN-607).
   const left = { id: '__vsAnchor', textContent: '@layer{*{overflow-anchor:auto!important}}', remove() { styles.delete(this.id); } };
   styles.set(left.id, left);
   const add = ctx.document.head.prepend;
-  let added = 0;
-  ctx.document.head.prepend = (s) => { added++; return add(s); };
+  const put = [];
+  ctx.document.head.prepend = (s) => { put.push(s); return add(s); };
   const shoot = ctx.chrome.tabs.captureVisibleTab;
   const rules = [];
   ctx.chrome.tabs.captureVisibleTab = async (...a) => { rules.push(styles.get('__vsAnchor')?.textContent); return shoot(...a); };
   await ctx.captureFullPage(TAB);
-  assert.strictEqual(added, 0, 'put a second rule in');
+  // The rule left behind, and not a second one, goes in front of any layer the
+  // page has put before it since (KAN-611).
+  assert.deepStrictEqual(put, [left], 'did not move the rule left behind first in <head>');
   assert.deepStrictEqual(rules, Array(4).fill('@layer{*{overflow-anchor:auto!important;scroll-snap-type:none!important}}'), "shot a slice with the rule's old text");
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
