@@ -74,7 +74,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
     // A window that is drawing runs the callback; from frozenAt on it never does.
     // The probe for slice k runs before capture k, so captureAt is one short.
     requestAnimationFrame: (cb) => { if (!frozenAt || captureAt.length < frozenAt - 1) cb(); },
-    getComputedStyle: (e) => ({ position: fixed.includes(e) ? (e.pos || 'fixed') : 'static' }),
+    getComputedStyle: (e) => ({ position: fixed.includes(e) ? (e.pos || 'fixed') : 'static', overflow: e.overflow || 'visible' }),
     window: {
       innerWidth: iw, innerHeight: ih, devicePixelRatio: dpr,
       // Faithful to the browser: window.scrollTo drives the document scroller.
@@ -339,14 +339,23 @@ test('stops rather than stitch in a tab the user switched to', async () => {
 // have shown it, leaving blank space where it belongs (KAN-218). Sparing it
 // then stitched it in again at the top of every later slice it stayed stuck
 // in (KAN-403): a sticky element is hidden only in the slices it is stuck in.
+// A `bottom` one can be stuck already at the top of the page, so each one's
+// place is read as `static`, and the first slice is checked too (KAN-501).
 
-// Keeps what the capture did to the element's visibility, in order.
+// Keeps what the capture did to the element's visibility, in order, and holds
+// the inline `position` a capture sets on it and puts back.
 function positioned(pos, top, bottom) {
   const seen = [];
+  const inline = {}; // property -> [value, priority]
   return {
     pos, seen,
     getBoundingClientRect: () => ({ top, bottom }),
-    style: { set visibility(v) { seen.push(v); }, get visibility() { return seen.length ? seen[seen.length - 1] : ''; } },
+    style: {
+      set visibility(v) { seen.push(v); }, get visibility() { return seen.length ? seen[seen.length - 1] : ''; },
+      setProperty(name, value, priority = '') { if (value) inline[name] = [value, priority]; else delete inline[name]; },
+      getPropertyValue: (name) => (inline[name] ? inline[name][0] : ''),
+      getPropertyPriority: (name) => (inline[name] ? inline[name][1] : ''),
+    },
   };
 }
 
@@ -356,7 +365,22 @@ function positioned(pos, top, bottom) {
 function stickyAt(scroller, at, end, height = 40) {
   const e = positioned('sticky');
   e.getBoundingClientRect = () => {
-    const top = Math.min(Math.max(at - scroller.scrollTop, 0), end - height - scroller.scrollTop);
+    const y = scroller.scrollTop;
+    // `static` puts it in its place, stuck or not
+    const top = e.style.getPropertyValue('position') === 'static' ? at - y : Math.min(Math.max(at - y, 0), end - height - y);
+    return { top, bottom: top + height };
+  };
+  return e;
+}
+
+// A `bottom: 0` sticky element whose place in the page is `at`, in a container
+// that starts at `start`: stuck to the bottom of a `vh` viewport until the page
+// scrolls down to its place, and in it from then on.
+function stickyToBottomAt(scroller, at, start, vh, height = 40) {
+  const e = positioned('sticky');
+  e.getBoundingClientRect = () => {
+    const y = scroller.scrollTop;
+    const top = e.style.getPropertyValue('position') === 'static' ? at - y : Math.max(Math.min(at - y, vh - height), start - y);
     return { top, bottom: top + height };
   };
   return e;
@@ -413,6 +437,72 @@ test('still hides a sticky header the first screen shows', async () => {
   assert.strictEqual(header.style.visibility, '', 'left the header hidden');
 });
 
+test('shows a bottom-sticky bar at its own place, not over the first screen', async () => {
+  // A 40 px `bottom: 0` bar whose place is 2400 px down, in a container that
+  // starts at the top: at the top of the page it is stuck to the bottom of the
+  // screen. It carries the page's own inline `position: sticky !important`.
+  const body = el(3000, 713);
+  const bar = stickyToBottomAt(body, 2400, 0, 713);
+  bar.style.setProperty('position', 'sticky', 'important');
+  const { ctx, captureAt, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [bar] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287]);
+  // Stuck to the bottom of the first three slices, in its place in the last two.
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['hidden', 'hidden', 'hidden', '', ''], 'the bar was stitched in where it was stuck, or blanked out of its own place');
+  assert.strictEqual(bar.style.visibility, '', 'left the bar hidden');
+  assert.deepStrictEqual([bar.style.getPropertyValue('position'), bar.style.getPropertyPriority('position')], ['sticky', 'important'], 'did not put the page\'s own position back');
+});
+
+test('leaves a sticky element stuck inside a scroller of its own where it is painted', async () => {
+  // A table header stuck to the top of a scrolled box. The box moves with the
+  // page, so the header does too; `static` would put it 300 px further up, out
+  // of the box's view, which is not where the page shows it. Any overflow but
+  // visible and clip makes the box a scroller ('hidden auto' is overflow-x
+  // hidden, overflow-y auto).
+  for (const overflow of ['auto', 'scroll', 'hidden', 'hidden auto']) {
+    const body = el(3052, 767);
+    const header = positioned('sticky');
+    header.parentElement = { overflow }; // the box
+    header.getBoundingClientRect = () => {
+      const top = (header.style.getPropertyValue('position') === 'static' ? 100 : 400) - body.scrollTop;
+      return { top, bottom: top + 30 };
+    };
+    const { ctx } = load({ de: el(767, 767), body, fixed: [header] });
+    await ctx.captureFullPage(TAB);
+    assert.ok(!header.seen.includes('hidden'), `blanked a header stuck inside its own scroller (overflow: ${overflow})`);
+  }
+});
+
+test('reads a sticky element as the page\'s when nothing between it and the page scrolls', async () => {
+  // overflow: clip makes no scroller, and <body> and <html> are the page
+  // itself whatever their own overflow says: <body> is the scroller on a page
+  // whose <body> scrolls, and <html> can hold elements added straight to it.
+  const cases = {
+    'a wrapper with overflow: clip': () => ({ overflow: 'clip' }),
+    '<body>, scrolling': (body) => Object.assign(body, { overflow: 'auto' }),
+    '<html>, overflow: hidden': (_body, de) => Object.assign(de, { overflow: 'hidden' }),
+  };
+  for (const [name, parent] of Object.entries(cases)) {
+    const body = el(3000, 713), de = el(713, 713);
+    const bar = stickyToBottomAt(body, 2400, 0, 713);
+    bar.parentElement = parent(body, de);
+    const { ctx, shownAt } = load({ de, body, ih: 713, fixed: [bar] });
+    await ctx.captureFullPage(TAB);
+    assert.deepStrictEqual(shownAt.map(([v]) => v), ['hidden', 'hidden', 'hidden', '', ''], `read the bar as painted under ${name}`);
+  }
+});
+
+test('puts a bar hidden on the first slice back when the capture stops there', async () => {
+  // A page that won't scroll stops the stitch before the second slice's fixed
+  // hide, the step that used to be the only one with anything to put back.
+  const body = lockedEl(3052, 767);
+  const bar = stickyToBottomAt(body, 2400, 0, 767);
+  const { ctx, captureAt } = load({ de: el(767, 767), body, fixed: [bar] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0], 'the stitch did not stop at the first slice');
+  assert.strictEqual(bar.style.visibility, '', 'left the bar hidden');
+});
+
 test('still hides a fixed element wherever it sits', async () => {
   const button = positioned('fixed', 700, 760); // a back-to-top button, pinned to the viewport
   const { ctx } = load({ de: el(767, 767), body: el(3052, 767), fixed: [button] });
@@ -427,11 +517,11 @@ test('runs no sticky pass on a page that fits one screen', async () => {
   assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'reportFrame', 'scrollAndReport'], 'ran the sticky passes on a page with one slice');
 });
 
-test('marks and hides fixed elements once, and checks sticky ones on every later slice', async () => {
+test('marks and hides fixed elements once, and checks sticky ones on every slice', async () => {
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(3052, 767) });
   await ctx.captureFullPage(TAB);
-  // the marking, the fixed hide and the restore once each, and the sticky check on each of the three later slices
-  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 6, 'the marking or the fixed hide ran more than once, or a later slice went unchecked');
+  // the marking, the fixed hide and the restore once each, and the sticky check on each of the four slices
+  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 7, 'the marking or the fixed hide ran more than once, or a slice went unchecked');
 });
 
 // --- a window that stops drawing -------------------------------------------
