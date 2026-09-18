@@ -496,14 +496,20 @@ async function captureFullPage(tab, format, popupId) {
         // another tab: stop rather than stitch it in.
         const now = await chrome.tabs.get(tab.id);
         if (!now.active || now.windowId !== tab.windowId) throw new Error('Full page stopped: another tab is now showing');
-        // And the fixed ones the page put in, or pinned, after the hide above:
-        // they are in this shot, at their spot on the screen (KAN-525). One
+        // And the fixed and sticky ones the page put in, or pinned, after the hide above:
+        // they are in this shot, at their spot on the screen (KAN-525, KAN-526). One
         // found here sends the slice back to settle and run the passes above
         // again before it is shot again. Shot straight away, it would wait out
         // the rest of CAPTURE_MIN_GAP_MS after those passes instead, and give
         // the page that long to put in another. The second shot is kept: the
         // next slice's first fixed hide finds whatever turns up after it.
-        if (i === 0 || shot === 2 || !await setFixedHidden(tab, true)) break;
+        let reshot = false;
+        if (i > 0 && await setFixedHidden(tab, true)) reshot = true;
+        if (hid) {
+          if (await markSticky(tab, false)) reshot = true;
+          if (await hideStuckSticky(tab)) reshot = true;
+        }
+        if (i === 0 || shot === 2 || !reshot) break;
       }
       const bmp = await createImageBitmap(await (await fetch(url)).blob());
       
@@ -623,7 +629,7 @@ async function captureFullPage(tab, format, popupId) {
 // top of every slice they stayed stuck in (KAN-403). So each slice hides the
 // ones that are away from their place (see hideStuckSticky).
 async function markSticky(tab, first) {
-  await scriptWithTimeout({
+  const [{ result }] = await scriptWithTimeout({
     target: { tabId: tab.id },
     func: (first) => {
       const list = [];
@@ -664,10 +670,13 @@ async function markSticky(tab, first) {
       // listed already keeps the visibility recorded for it: by now it has the
       // one hideStuckSticky gave it, not its own.
       const listed = first ? [] : window.__shotSticky || [];
-      window.__shotSticky = [...listed, ...onPage.filter((el) => !listed.some(([e]) => e === el)).map((el) => [el, el.style.visibility])];
+      const added = onPage.filter((el) => !listed.some(([e]) => e === el)).map((el) => [el, el.style.visibility]);
+      window.__shotSticky = [...listed, ...added];
+      return added.length > 0;
     },
     args: [first],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
+  return result;
 }
 
 // Where the page has a sticky element is where `static` puts it: one that
@@ -679,7 +688,7 @@ async function markSticky(tab, first) {
 // (KAN-502). Within a pixel of its place counts as in it: rects are
 // fractional.
 async function hideStuckSticky(tab) {
-  await scriptWithTimeout({
+  const [{ result }] = await scriptWithTimeout({
     target: { tabId: tab.id },
     func: () => {
       const list = window.__shotSticky || [];
@@ -687,12 +696,19 @@ async function hideStuckSticky(tab) {
       const was = list.map(([el]) => [el.style.getPropertyValue('position'), el.style.getPropertyPriority('position')]);
       for (const [el] of list) el.style.setProperty('position', 'static', 'important');
       const place = list.map(([el]) => el.getBoundingClientRect().top);
+      let changed = false;
       list.forEach(([el, v], k) => {
         el.style.setProperty('position', ...was[k]);
-        el.style.visibility = Math.abs(painted[k] - place[k]) > 1 ? 'hidden' : v;
+        const set = Math.abs(painted[k] - place[k]) > 1 ? 'hidden' : v;
+        if (el.style.visibility !== set) {
+          el.style.visibility = set;
+          changed = true;
+        }
       });
+      return changed;
     },
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
+  return result;
 }
 
 async function setFixedHidden(tab, hide, first = false) {

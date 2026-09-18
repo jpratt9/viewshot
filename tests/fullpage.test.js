@@ -653,8 +653,8 @@ test('runs no sticky pass on a page that fits one screen', async () => {
 test('hides fixed elements before and after the settle and after the shot on every slice but the first, and lists and checks sticky ones before and after the settle on every slice', async () => {
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(3052, 767) });
   await ctx.captureFullPage(TAB);
-  // the fixed hide three times on each of the three slices after the first, the restore once, and the sticky listing and check twice on each of the four slices
-  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 26, 'the fixed hide ran on the first slice or missed a later one, its settle or its shot, or a slice or its settle went unlisted or unchecked');
+  // the fixed hide three times on each of the three slices after the first, the restore once, and the sticky listing and check three times on each of the four slices
+  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 34, 'the fixed hide ran on the first slice or missed a later one, its settle or its shot, or a slice or its settle went unlisted or unchecked');
 });
 
 // --- fixed elements that turn up after the second slice ---------------------
@@ -745,9 +745,9 @@ test('asks for a frame only after the passes that follow the settle', async () =
   // come after the hides, or the shot can show what they took out (KAN-517).
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(1534, 767) }); // two slices
   await ctx.captureFullPage(TAB);
-  // the first slice: the sticky listing and check, both again once it has settled, and then the frame;
-  // the second: the sticky listing, the fixed hide and the sticky check, all three again once it has settled, the frame, and the fixed hide after the shot
-  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'func', 'func', 'reportFrame', 'scrollAndReport', 'func', 'func', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'func', 'scrollAndReport'], 'asked for the frame before a pass that follows the settle');
+  // the first slice: the sticky listing and check, both again once it has settled, the frame, and both again after the shot;
+  // the second: the sticky listing, the fixed hide and the sticky check, all three again once it has settled, the frame, and all three again after the shot
+  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'func', 'scrollAndReport', 'func', 'func', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'func', 'func', 'func', 'scrollAndReport'], 'asked for the frame before a pass that follows the settle');
 });
 
 // --- fixed elements that turn up after a slice's last fixed hide ------------
@@ -813,9 +813,26 @@ test('settles again and runs the passes that follow the settle before it shoots 
   const timer = ctx.setTimeout;
   ctx.setTimeout = (fn, ms) => { if (ms === 500) scriptCalls.push('settle'); return timer(fn, ms); };
   await ctx.captureFullPage(TAB);
-  // the second slice: the sticky listing, the fixed hide and the sticky check, the settle, all three again, the frame, and the fixed hide after the shot, which finds the banner;
-  // then the settle, the three passes that follow it and the frame again, and no fixed hide after the second shot
-  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'settle', 'func', 'func', 'reportFrame', 'scrollAndReport', 'func', 'func', 'func', 'settle', 'func', 'func', 'func', 'reportFrame', 'func', 'settle', 'func', 'func', 'func', 'reportFrame', 'func', 'scrollAndReport'], 'shot the slice again before it settled and ran the passes that follow the settle, or checked after its second shot');
+  // the second slice: the sticky listing, the fixed hide and the sticky check, the settle, all three again, the frame, and all three again after the shot, which finds the banner;
+  // then the settle, the three passes that follow it and the frame again, and all three again after the second shot
+  assert.deepStrictEqual(scriptCalls, [
+    'measurePage',     'scrollAndReport',
+    'func',            'func',
+    'settle',          'func',
+    'func',            'reportFrame',
+    'func',            'func',
+    'scrollAndReport', 'func',
+    'func',            'func',
+    'settle',          'func',
+    'func',            'func',
+    'reportFrame',     'func',
+    'func',            'func',
+    'settle',          'func',
+    'func',            'func',
+    'reportFrame',     'func',
+    'func',            'func',
+    'func',            'scrollAndReport'
+  ], 'shot the slice again before it settled and ran the passes that follow the settle, or checked after its second shot');
 });
 
 test('shoots a slice twice at most, however many fixed elements the page puts in', async () => {
