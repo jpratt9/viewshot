@@ -180,7 +180,12 @@ async function startRecording(streamId, format, width, height, cssPx, audio) {
       // A late error from a stopped recorder must not clear a newer recording.
       if (rec?.recorder === recorder) onRecError(event.error || event);
     };
-    rec.recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    rec.recorder.ondataavailable = (e) => { 
+      if (e.data.size) {
+        chunks.push(e.data);
+        openDB().then(db => db.transaction('recordings', 'readwrite').objectStore('recordings').put(e.data, chunks.length));
+      }
+    };
     // Closing the captured tab ends the track, and the recorder stops by itself
     // - final flush, then `stop` - before rec-stop has been to the worker and
     // back. An onstop set in stopRecording() by then never runs, so listen now.
@@ -192,6 +197,12 @@ async function startRecording(streamId, format, width, height, cssPx, audio) {
     // everything because the only flush is at stop().
     rec.recorder.start(1000);
     rec.startedAt = Date.now();
+    const startedAt = rec.startedAt;
+    openDB().then(db => {
+      const store = db.transaction('recordings', 'readwrite').objectStore('recordings');
+      store.clear();
+      store.put({ format, startedAt }, 'meta');
+    });
     log('MediaRecorder state:', rec.recorder.state);
   }
 }
@@ -241,6 +252,7 @@ function stopRecording(filename) {
     const { recorder, chunks, stopped, startedAt, playback } = rec;
     stopped.then(async (stoppedAt) => {
       download(format === 'webm' ? await withDuration(chunks, stoppedAt - startedAt) : new Blob(chunks, { type: `video/${format}` }), filename);
+      openDB().then(db => db.transaction('recordings', 'readwrite').objectStore('recordings').clear());
       stream.getTracks().forEach((t) => t.stop());
       playback?.close(); // the tab plays its own sound again once its tracks stop
     });
@@ -339,3 +351,32 @@ function onRecError(e) {
   teardown();
   chrome.runtime.sendMessage({ type: 'rec-failed' });
 }
+const DB_NAME = 'ViewShotRecovery';
+function openDB() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = (e) => e.target.result.createObjectStore('recordings');
+    req.onsuccess = (e) => res(e.target.result);
+    req.onerror = (e) => rej(req.error);
+  });
+}
+
+openDB().then((db) => {
+  const store = db.transaction('recordings', 'readonly').objectStore('recordings');
+  store.getAll().onsuccess = (e) => {
+    const vals = e.target.result;
+    if (vals.length === 0) return;
+    store.getAllKeys().onsuccess = (k) => {
+      const keys = k.target.result;
+      const metaIdx = keys.indexOf('meta');
+      if (metaIdx === -1) return;
+      const meta = vals[metaIdx];
+      const chunks = vals.filter((_, i) => i !== metaIdx);
+      if (chunks.length > 0) {
+        log('Recovered left-over recording', chunks.length, 'chunks, format', meta.format);
+        download(new Blob(chunks, { type: `video/${meta.format}` }), `recovered-shot.${meta.format}`);
+      }
+      db.transaction('recordings', 'readwrite').objectStore('recordings').clear();
+    };
+  };
+}).catch(console.error);

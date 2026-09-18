@@ -95,6 +95,28 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
     createImageBitmap: async () => ({ width: 100, height: 100 }),
     fetch: async () => ({ blob: async () => ({}) }),
   };
+  
+  context.indexedDB = {
+    open: () => {
+      const req = {
+        result: {
+          transaction: () => ({
+            objectStore: () => ({
+              clear: () => ({}), put: () => ({}),
+              getAll: () => { const r = {}; setTimeout(() => r.onsuccess && r.onsuccess({ target: { result: [] } }), 0); return r; },
+              getAllKeys: () => { const r = {}; setTimeout(() => r.onsuccess && r.onsuccess({ target: { result: [] } }), 0); return r; }
+            })
+          }),
+          createObjectStore: () => ({})
+        }
+      };
+      setTimeout(() => {
+        if (req.onupgradeneeded) req.onupgradeneeded({ target: req });
+        if (req.onsuccess) req.onsuccess({ target: req });
+      }, 0);
+      return req;
+    }
+  };
   vm.createContext(context);
   vm.runInContext(read('background.js'), context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
@@ -312,6 +334,28 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
     },
     localStorage: { getItem: () => null, setItem: () => {} },
     crypto: { randomUUID: () => 'popup-1' }, // the id this popup's captures carry (KAN-552)
+  };
+  
+  context.indexedDB = {
+    open: () => {
+      const req = {
+        result: {
+          transaction: () => ({
+            objectStore: () => ({
+              clear: () => ({}), put: () => ({}),
+              getAll: () => { const r = {}; setTimeout(() => r.onsuccess && r.onsuccess({ target: { result: [] } }), 0); return r; },
+              getAllKeys: () => { const r = {}; setTimeout(() => r.onsuccess && r.onsuccess({ target: { result: [] } }), 0); return r; }
+            })
+          }),
+          createObjectStore: () => ({})
+        }
+      };
+      setTimeout(() => {
+        if (req.onupgradeneeded) req.onupgradeneeded({ target: req });
+        if (req.onsuccess) req.onsuccess({ target: req });
+      }, 0);
+      return req;
+    }
   };
   vm.createContext(context);
   vm.runInContext(read('popup.js'), context);
@@ -564,6 +608,28 @@ function loadOffscreen() {
     setTimeout: (fn) => { timers.push(fn); return 0; }, clearInterval: () => {}, setInterval: () => 0, clearTimeout: () => {},
     GIF: class {},
     Date: class extends Date { static now() { return now; } },
+  };
+  
+  context.indexedDB = {
+    open: () => {
+      const req = {
+        result: {
+          transaction: () => ({
+            objectStore: () => ({
+              clear: () => ({}), put: () => ({}),
+              getAll: () => { const r = {}; setTimeout(() => r.onsuccess && r.onsuccess({ target: { result: [] } }), 0); return r; },
+              getAllKeys: () => { const r = {}; setTimeout(() => r.onsuccess && r.onsuccess({ target: { result: [] } }), 0); return r; }
+            })
+          }),
+          createObjectStore: () => ({})
+        }
+      };
+      setTimeout(() => {
+        if (req.onupgradeneeded) req.onupgradeneeded({ target: req });
+        if (req.onsuccess) req.onsuccess({ target: req });
+      }, 0);
+      return req;
+    }
   };
   vm.createContext(context);
   vm.runInContext(read('offscreen.js'), context);
