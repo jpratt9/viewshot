@@ -351,13 +351,20 @@ Checked while planning, on a copy of the repo outside this folder:
 5. Check that nothing else changed.
    → verify: `git status --short` lists only the eight files above and this plan.
 
-## Open questions
+## Open questions — settled
 
-1. **Should a popup opened while a capture is already running know about it?** For example, the popup was closed and opened again partway through a Full page, or a shortcut started the capture.
-   - As planned, only the popup that sent the capture shows its progress and greys its buttons out. A popup opened later shows nothing, and pressing a button there starts a second capture.
-   - Covering that case would mean keeping the capture's state in storage, the way `rec` is kept and followed (`background.js:102-134`, `popup.js:195-200`). It would also need a way to clear state left behind by a worker that died mid-capture, as `getRec` does for `rec`.
-   - The ticket says "Keep the mode buttons disabled until the capture finishes" without saying which popup.
-   - Refusing a second capture in the worker itself is KAN-213 ("Allow only one capture at a time"), which this ticket blocks.
+The plan left one question open and left one check to John (step 4). Both are settled here, and neither changes the code shipped in `102f235`.
+
+1. **Should a popup opened while a capture is already running know about it?** Not as part of KAN-220.
+   - The ticket is about the popup a capture was started from: "For Visible and Full page the popup stays open, but it never learns how the capture went." The second click it warns about is one in that popup, and it points to the overlapping-captures bug for the rest.
+   - Refusing a second capture from anywhere is KAN-213 ("Allow only one capture at a time").
+   - A popup opened mid-capture showing that capture is KAN-545, filed from this question.
+   - This ticket blocks both.
+2. **How the status box looks** (step 4 left this to John). Screenshots of the popup were taken in headed Chrome 153.0.8010.48 (`/tmp/vs387-chrome/run-220c.js`) on a local page 8000 px tall.
+   - **During a Full page:** "Capturing screen 3 of 12…" fits on one line in the grey box under the mode buttons, which are dimmed.
+   - **After it:** "Saved." is in the same box, and the buttons are at full strength again.
+   - **On Chrome's error page:** the error is in the red box, which has the same shape and sits in the same place.
+   - Like the red box, the grey box sits close above the Format row, because `.status` copies `.err`'s margins.
 
 ## Added when shipping
 
