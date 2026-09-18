@@ -247,7 +247,7 @@ async function runCapture(mode, opts, tabId) {
   if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
   try {
     if (mode === 'visible') png = await captureVisible(tab.windowId);
-    else if (mode === 'fullpage') png = await captureFullPage(tab);
+    else if (mode === 'fullpage') png = await captureFullPage(tab, opts.toClipboard ? 'png' : opts.format);
   } finally {
     if (opts.hideScrollbar) await setScrollbarHidden(tab, false); // restore
   }
@@ -336,13 +336,23 @@ async function scrollPageTo(tab, y) {
 }
 
 // ---- full page: scroll the viewport and stitch ----
-async function captureFullPage(tab) {
+// Chrome encodes no canvas past 65,535 px a side or 268,435,456 px² in all -
+// convertToBlob throws IndexSizeError - and cuts a JPEG at 65,500 px and a
+// WebP at 16,383 px without a word (KAN-210). A full page that would be
+// bigger is scaled down to fit, worked out before the first scroll: the old
+// stitch only found out after it had scrolled every screen.
+const MAX_SIDE = { png: 65535, jpg: 65500, webp: 16383 };
+const MAX_AREA = 268435456;
+async function captureFullPage(tab, format) {
   const [{ result: m }] = await scriptWithTimeout({
     target: { tabId: tab.id },
     func: measurePage,
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
 
-  const canvas = new OffscreenCanvas(Math.round(m.vw * m.dpr), Math.round(m.total * m.dpr));
+  const w = Math.round(m.vw * m.dpr), h = Math.round(m.total * m.dpr);
+  const side = MAX_SIDE[format] || MAX_SIDE.png; // a recording format is saved as PNG
+  const scale = Math.min(1, side / w, side / h, Math.sqrt(MAX_AREA / (w * h)));
+  const canvas = new OffscreenCanvas(Math.floor(w * scale), Math.floor(h * scale));
   const ctx = canvas.getContext('2d');
   const positions = [...new Set(
     Array.from({ length: Math.ceil(m.total / m.vh) }, (_, i) => Math.min(i * m.vh, Math.max(0, m.total - m.vh)))
@@ -381,7 +391,9 @@ async function captureFullPage(tab) {
       const now = await chrome.tabs.get(tab.id);
       if (!now.active || now.windowId !== tab.windowId) throw new Error('Full page stopped: another tab is now showing');
       const bmp = await createImageBitmap(await (await fetch(url)).blob());
-      ctx.drawImage(bmp, 0, Math.round(actual * m.dpr)); // where it really is, not where we asked
+      // Whole rows at each end, so scaled slices meet without a seam.
+      const top = Math.round(actual * m.dpr * scale);
+      ctx.drawImage(bmp, 0, top, Math.round(bmp.width * scale), Math.round((actual * m.dpr + bmp.height) * scale) - top); // where it really is, not where we asked
     }
   } finally {
     if (hid) await setFixedHidden(tab, false); // restore
@@ -390,7 +402,7 @@ async function captureFullPage(tab) {
 
   // Trim to what was actually stitched, so an early stop yields a short correct
   // image instead of a tall one padded with blank space.
-  const filled = Math.min(canvas.height, Math.round((landed + m.vh) * m.dpr));
+  const filled = Math.min(canvas.height, Math.round((landed + m.vh) * m.dpr * scale));
   let out = canvas;
   if (filled > 0 && filled < canvas.height) {
     out = new OffscreenCanvas(canvas.width, filled);

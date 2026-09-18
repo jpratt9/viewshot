@@ -45,9 +45,11 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; this.draws = []; canvases.push(this); }
     getContext() {
-      return { drawImage: (_img, x, y) => this.draws.push({ x, y }), fillStyle: '', fillRect() {} };
+      return { drawImage: (_img, x, y, w, h) => this.draws.push({ x, y, w, h }), fillStyle: '', fillRect() {} };
     }
     async convertToBlob() {
+      // Chrome's own limits (KAN-210): past them it throws rather than encode.
+      if (this.width > 65535 || this.height > 65535 || this.width * this.height > 268435456) throw new Error('IndexSizeError: The size of "OffscreenCanvas" is zero.');
       return { type: 'image/png', arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
     }
   }
@@ -222,6 +224,52 @@ test('restores the original scroll offset when done', async () => {
   const { ctx } = load({ de: el(767, 767), body });
   await ctx.captureFullPage(TAB);
   assert.strictEqual(body.scrollTop, 640);
+});
+
+// --- pages too big for one image ---------------------------------------------
+// Chrome encodes no canvas past 65,535 px a side or 268,435,456 px² in all, and
+// cuts a JPEG at 65,500 px and a WebP at 16,383 px without a word. The stitch
+// found out only after scrolling every screen, and a WebP lost its bottom with
+// no error. It now scales down to fit what it will be saved as (KAN-210).
+
+test('a page too tall to encode is scaled to fit', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(40000, 767) });
+  await ctx.captureFullPage(TAB); // 80,000 px tall at dpr 2
+  assert.ok(canvases[0].height <= 65535, `${canvases[0].height} px tall`);
+  assert.strictEqual(canvases[0].width, Math.floor(1512 * 2 * (65535 / 80000)), 'the width was not scaled with it');
+});
+
+test('a WebP full page is held to 16,383 px', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(10000, 767) });
+  await ctx.captureFullPage(TAB, 'webp'); // 20,000 px tall at dpr 2
+  assert.ok(canvases[0].height <= 16383, `${canvases[0].height} px tall`);
+});
+
+test('a JPEG full page is held to 65,500 px', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(34000, 767) });
+  await ctx.captureFullPage(TAB, 'jpg'); // 68,000 px tall at dpr 2
+  assert.ok(canvases[0].height <= 65500, `${canvases[0].height} px tall`);
+});
+
+test('a wide window is held to the area limit', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(20000, 767), iw: 3840 });
+  await ctx.captureFullPage(TAB); // 7,680 × 40,000 px at dpr 2
+  assert.ok(canvases[0].width * canvases[0].height <= 268435456, `${canvases[0].width} × ${canvases[0].height} px`);
+});
+
+test('scaled slices meet with no gap', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: el(40000, 767) });
+  await ctx.captureFullPage(TAB);
+  const draws = canvases[0].draws;
+  for (let i = 1; i < draws.length; i++) assert.ok(draws[i].y <= draws[i - 1].y + draws[i - 1].h, `a gap above slice ${i}`);
+  const last = draws[draws.length - 1];
+  assert.ok(last.y + last.h >= canvases[0].height, 'the last slice stops short of the bottom');
+});
+
+test('a scaled page that stops early is trimmed at the same scale', async () => {
+  const { ctx, canvases } = load({ de: el(767, 767), body: lockedEl(40000, 767) });
+  await ctx.captureFullPage(TAB); // 80,000 px tall at dpr 2, and it never scrolls
+  assert.strictEqual(canvases[1].height, Math.round(767 * 2 * (65535 / 80000)), 'trimmed to the unscaled slice');
 });
 
 // --- pages with smooth scrolling -------------------------------------------

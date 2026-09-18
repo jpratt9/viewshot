@@ -221,6 +221,17 @@ test('an uninjectable page still reaches the shutter', async () => {
   assert.strictEqual(bg.shots.length, 1, 'the cosmetic step swallowed the whole capture');
 });
 
+// A full page is scaled to fit what it will be saved as (KAN-210): WebP's limit
+// is the tightest, and the clipboard always takes a PNG.
+test('a full page is sized for the format it will be saved in', async () => {
+  const bg = loadBg();
+  const formats = [];
+  bg.ctx.captureFullPage = async (_tab, format) => { formats.push(format); throw new Error('stop'); };
+  await bg.ctx.runCapture('fullpage', { ...OPTS, format: 'webp' }).catch(() => {});
+  await bg.ctx.runCapture('fullpage', { ...OPTS, format: 'jpg', toClipboard: true }).catch(() => {});
+  assert.deepStrictEqual(formats, ['webp', 'png']);
+});
+
 test('a capture that really fails flashes the badge instead of dying quietly', async () => {
   const bg = loadBg({ captureFails: () => 'Cannot access a chrome:// URL' });
   await bg.ctx.runCapture('visible', OPTS).catch(bg.ctx.captureFailed);
