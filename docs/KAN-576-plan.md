@@ -238,9 +238,21 @@ Two files change: `background.js` and `tests/fullpage.test.js`. Both diffs were 
 - **The md5s match the KAN-583 plan.** The first three are the md5s it lists for these pages.
 - **Runs that saved no file:** the first runs of `selfscroll` and `still` on `HEAD`. Both saved a file when run again.
 
-## Open questions
+## Open questions — settled
 
-1. **Should a page that scrolls itself between two slices, while its height also changes between them, be covered too?**
-   - The ticket's page keeps its height, and the plan covers only that case.
-   - On a page whose height changes in the same gap, for example because an image below the screen loads, the plan still takes the page's own scroll for content above changing height.
-   - Covering it needs some measure of content above the rows other than the page's height. One example is reading one element's place in the page, the other way the KAN-575 plan names.
+The plan left one question open. It is settled here, and it doesn't change the code shipped in `6e85e7c`.
+
+1. **Should a page that scrolls itself between two slices, while its height also changes between them, be covered too?** Not as part of KAN-576.
+   - **What the ticket covers:** a page that scrolls itself between slices, where "its height doesn't change". `6e85e7c` lines that page up; see the `selfscroll` runs above.
+   - **Why this case is different:** the page's height is what tells the two apart.
+     - When the height changes in the same gap, for example because content below the screen loads in, the whole move is still taken for content above changing height, as before.
+     - `selfscroll-grow` shows this. It is `selfscroll`, plus 100 px added at the end of the page at the moment it scrolls itself, in `/tmp/vs387-chrome/run-576.js`.
+     - Run after the change, it leaves green out and draws blue 200 px up, in a 2900 px image. That is the same PNG as on `04c9ffb`.
+   - **What covering it would take:** some measure of content above the rows other than the page's height. One example is reading one element's place in the page on every slice, the other way the KAN-575 plan names. That needs a rule for which element to read.
+   - **Follow-up:** KAN-590, filed from this question.
+
+**Other follow-ups:**
+- **KAN-591**, filed from the choice above about content above that changes height while other content changes by exactly the opposite amount.
+- **KAN-592**, a page that scrolls itself while a slice settles, before its shot, filed alongside the other two.
+
+**This ticket blocks all three.**
