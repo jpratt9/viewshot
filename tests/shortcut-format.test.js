@@ -36,7 +36,7 @@ async function pressShortcut(command, format) {
     },
     scripting: { executeScript: async () => [{}] },
     downloads: { download: async (o) => { downloads.push(o); } },
-    storage: { local: { get: async () => ({ opts: { format, filename: 'shot' } }) } },
+    storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({ opts: { format, filename: 'shot' } }) } },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
@@ -86,7 +86,7 @@ function recordingBrowser(format = 'webm', storedRec = null) {
       sendMessage: async (m) => { calls.sent.push(m); return m.type === 'offscreen-id' ? 'doc' : 'pong'; },
     },
     commands: { onCommand: { addListener(fn) { onCommand = fn; } } },
-    storage: { local: {
+    storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: {
       get: async (key) => key === 'rec' ? { rec } : { opts: { format, filename: 'recording' } },
       set: async (v) => { if ('rec' in v) rec = v.rec; },
       remove: async () => { rec = null; },

@@ -46,7 +46,7 @@ function loadBg({ scriptFails = false } = {}) {
       },
     },
     downloads: { download: async (d) => { order.push('download'); downloads.push(d); } },
-    storage: { local: { get: async () => ({}) } },
+    storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({}) } },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };
 
@@ -115,53 +115,52 @@ test('an uninjectable page does not block the capture', async () => {
 });
 
 // --- the abandoned promise --------------------------------------------------
-// captureRegion awaits a drag that may never come. Starting another capture
-// has to settle it, or its runCapture never unwinds and its listener leaks.
+// captureRegion now saves state to session storage and exits. Starting another
+// capture has to clear that state.
 
 test('starting another capture settles the abandoned selection as a cancel', async () => {
-  const { ctx } = loadBg();
-  const abandoned = ctx.captureRegion(TAB);
+  const { ctx, order } = loadBg();
+  await ctx.runCapture('region', OPTS);
   await settle();
+  assert.ok(order.includes('inject:region.js'));
   await ctx.runCapture('visible', OPTS);
-  assert.strictEqual(await abandoned, null);
+  await settle();
+  assert.ok(order.indexOf('cancel') !== -1, 'it must be cancelled');
 });
 
 test('the abandoned selection releases its message listener', async () => {
   const { ctx, extraListeners } = loadBg();
-  const abandoned = ctx.captureRegion(TAB);
+  await ctx.runCapture('region', OPTS);
   await settle();
-  assert.strictEqual(extraListeners(), 1, 'one selection is waiting');
-  await ctx.cancelRegion(TAB);
-  await abandoned;
-  assert.strictEqual(extraListeners(), 0, 'and it must not be left behind');
+  assert.strictEqual(extraListeners(), 0, 'no extra listeners should be left behind');
 });
 
 // The page-side teardown is silent for exactly this reason: a shot-region sent
 // from it could arrive after the next selection installed its listener and
 // cancel that one instead.
 test('cancelling does not consume the next selection', async () => {
-  const { ctx, dispatch } = loadBg();
-  const abandoned = ctx.captureRegion(TAB);
+  const { ctx, dispatch, downloads } = loadBg();
+  await ctx.runCapture('region', OPTS);
   await settle();
   await ctx.cancelRegion(TAB);
-  assert.strictEqual(await abandoned, null);
-
-  const fresh = ctx.captureRegion(TAB);
+  
+  await ctx.runCapture('region', OPTS);
   await settle();
   dispatch({ type: 'shot-region', rect: { x: 10, y: 20, w: 100, h: 80, dpr: 2 } });
-  assert.match(await fresh, /^data:image\/png/, 'the new drag must still produce a shot');
+  await settle();
+  assert.strictEqual(downloads.length, 1, 'the new drag must still produce a shot');
 });
 
 test('a second Region click gets a fresh overlay rather than the stale guard', async () => {
-  const { ctx, order, dispatch } = loadBg();
-  const abandoned = ctx.captureRegion(TAB);
+  const { ctx, order, dispatch, downloads } = loadBg();
+  await ctx.runCapture('region', OPTS);
   await settle();
-  const p = ctx.runCapture('region', OPTS);
+  await ctx.runCapture('region', OPTS);
   await settle();
-  assert.strictEqual(await abandoned, null);
   assert.ok(order.indexOf('cancel') < order.lastIndexOf('inject:region.js'), 'torn down before re-injecting');
-  dispatch({ type: 'shot-region', rect: null });
-  await p;
+  dispatch({ type: 'shot-region', rect: { x: 10, y: 20, w: 100, h: 80, dpr: 2 } });
+  await settle();
+  assert.strictEqual(downloads.length, 1);
 });
 
 // --- the popup must get out of the way --------------------------------------
@@ -193,7 +192,7 @@ function loadPopup() {
     },
     chrome: {
       tabs: { query: async () => [TAB], create: () => {} },
-      storage: { local: { get: async () => ({}), set: async () => {}, onChanged: { addListener() {} } } },
+      storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({}), set: async () => {}, onChanged: { addListener() {} } } },
       // The popup's startup rec-check is the worker's business, not this file's.
       runtime: { sendMessage: async (m) => { if (m.type !== 'rec-check') sent.push(m); } },
       tabCapture: { getMediaStreamId: async () => 'sid' },

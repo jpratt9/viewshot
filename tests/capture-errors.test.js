@@ -69,7 +69,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
       },
     },
     downloads: { download: async () => {} },
-    storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
+    storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
     action: {
       setBadgeText: async ({ text }) => { if (text) badges.push(text); },
       setBadgeBackgroundColor: async () => {},

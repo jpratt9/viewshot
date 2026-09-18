@@ -26,6 +26,28 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // first has already saved the file and cleared the badge, and a MAX over
   // that reports trouble with a recording that is finished.
   else if (msg?.type === 'rec-cap-hit') stopRecording().then((stopped) => { if (stopped) return flashBadge('MAX'); }).catch((e) => console.error('[ViewShot]', e));
+  else if (msg?.type === 'shot-region') {
+    chrome.storage.session.get('pendingRegion').then(async ({ pendingRegion }) => {
+      if (!pendingRegion) return;
+      await chrome.storage.session.remove('pendingRegion');
+      const { tab, opts } = pendingRegion;
+      try {
+        if (!msg.rect) return; // user cancelled
+        await sleep(80); // let the overlay clear before capturing
+        const bmp = await createImageBitmap(await (await fetch(await captureVisible(tab.windowId))).blob());
+        const d = msg.rect.dpr;
+        const canvas = new OffscreenCanvas(Math.round(msg.rect.w * d), Math.round(msg.rect.h * d));
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bmp, msg.rect.x * d, msg.rect.y * d, msg.rect.w * d, msg.rect.h * d, 0, 0, msg.rect.w * d, msg.rect.h * d);
+        const png = await blobToDataURL(await canvas.convertToBlob({ type: 'image/png' }));
+        await saveCapture(png, opts, tab);
+      } catch(e) {
+        captureFailed(e);
+      } finally {
+        if (opts.hideScrollbar) await setScrollbarHidden(tab, false).catch(() => {});
+      }
+    }).catch(captureFailed);
+  }
   else if (msg?.type === 'rec-failed') recFailed();
   // A recording's file is saved and the document has let go of it. Nothing else
   // closes the document after a recording; closeOffscreen still leaves it to a
@@ -213,23 +235,24 @@ async function runCapture(mode, opts, tabId) {
   const tab = await getActiveTab(tabId);
   if (!tab) throw new Error('No tab to capture'); // flash the badge rather than do nothing
   await cancelRegion(tab); // an abandoned overlay would otherwise dim this shot
+  
+  if (mode === 'region') {
+    if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
+    await chrome.storage.session.set({ pendingRegion: { tab, opts } });
+    await captureRegion(tab);
+    return;
+  }
+
   let png;
   if (opts.hideScrollbar) { await setScrollbarHidden(tab, true); await sleep(50); /* let the bar repaint out */ }
   try {
     if (mode === 'visible') png = await captureVisible(tab.windowId);
     else if (mode === 'fullpage') png = await captureFullPage(tab);
-    else if (mode === 'region') png = await captureRegion(tab);
   } finally {
     if (opts.hideScrollbar) await setScrollbarHidden(tab, false); // restore
   }
   if (!png) return;
-
-  if (opts.toClipboard) {
-    await copyImage(png);
-  } else {
-    const { dataUrl, ext } = await encode(png, opts);
-    await chrome.downloads.download({ url: dataUrl, filename: buildName(opts.filename, ext, tab), saveAs: false });
-  }
+  await saveCapture(png, opts, tab);
 }
 
 // ---- re-encode to chosen format/quality via OffscreenCanvas ----
@@ -460,45 +483,25 @@ async function setScrollbarHidden(tab, hide) {
 // ---- region: overlay drag-select, then crop the visible capture ----
 
 // Resolve of the selection currently awaiting a drag, if any.
-let cancelPendingRegion = null;
-
 // Clicking Region and then walking away leaves the dimmed overlay on the page:
 // it would be stitched into the next Visible/Full page shot, and a second
 // Region click would no-op against its re-entrancy guard. Tear it down first.
-// The page-side teardown sends no message (see region.js), so the abandoned
-// promise is settled here instead of racing the next capture's listener.
 async function cancelRegion(tab) {
-  cancelPendingRegion?.(null);
   try {
     await scriptWithTimeout({
       target: { tabId: tab.id },
       func: () => { if (window.__shotRegionCancel) window.__shotRegionCancel(); },
     }, CAPTURE_SCRIPT_TIMEOUT_MS);
   } catch { /* chrome:// and friends refuse injection, and hold no overlay */ }
+  const { pendingRegion } = await chrome.storage.session.get('pendingRegion');
+  if (pendingRegion) {
+    if (pendingRegion.opts.hideScrollbar) await setScrollbarHidden(pendingRegion.tab, false).catch(() => {});
+    await chrome.storage.session.remove('pendingRegion');
+  }
 }
 
 async function captureRegion(tab) {
-  const resultP = new Promise((resolve) => {
-    const done = (rect) => {
-      chrome.runtime.onMessage.removeListener(onMsg);
-      cancelPendingRegion = null;
-      resolve(rect);
-    };
-    const onMsg = (msg) => { if (msg?.type === 'shot-region') done(msg.rect); };
-    chrome.runtime.onMessage.addListener(onMsg);
-    cancelPendingRegion = done;
-  });
   await scriptWithTimeout({ target: { tabId: tab.id }, files: ['region.js'] }, CAPTURE_SCRIPT_TIMEOUT_MS);
-  const rect = await resultP;
-  if (!rect) return null;
-
-  await sleep(80); // let the overlay clear before capturing
-  const bmp = await createImageBitmap(await (await fetch(await captureVisible(tab.windowId))).blob());
-  const d = rect.dpr;
-  const canvas = new OffscreenCanvas(Math.round(rect.w * d), Math.round(rect.h * d));
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(bmp, rect.x * d, rect.y * d, rect.w * d, rect.h * d, 0, 0, rect.w * d, rect.h * d);
-  return await blobToDataURL(await canvas.convertToBlob({ type: 'image/png' }));
 }
 
 // ---- offscreen document (shared by clipboard + recording; only one allowed) ----
@@ -796,4 +799,13 @@ async function blobToDataURL(blob) {
   const chunk = 0x8000;
   for (let i = 0; i < buf.length; i += chunk) bin += String.fromCharCode.apply(null, buf.subarray(i, i + chunk));
   return `data:${blob.type};base64,${btoa(bin)}`;
+}
+
+async function saveCapture(png, opts, tab) {
+  if (opts.toClipboard) {
+    await copyImage(png);
+  } else {
+    const { dataUrl, ext } = await encode(png, opts);
+    await chrome.downloads.download({ url: dataUrl, filename: buildName(opts.filename, ext, tab), saveAs: false });
+  }
 }
