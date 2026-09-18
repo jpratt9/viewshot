@@ -2505,3 +2505,63 @@ test('a popup that can\'t ask the worker what is running is left as it was', asy
   assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
   assert.ok(!p.els.status || p.els.status.hidden, 'said a capture was running');
 });
+
+// --- a capture that starts while a popup is open (KAN-561) ------------------
+// A popup heard of a capture it didn't send only as it opened. One whose turn
+// started while the popup was open - queued behind the capture it was showing,
+// or a shortcut's - showed nothing, and the popup's buttons were live.
+
+test('tells every popup when a Visible or Full page starts, after the one before it has ended', async () => {
+  const bg = loadBg();
+  const sent = [];
+  bg.ctx.chrome.runtime.sendMessage = async (m) => { sent.push(m.type); };
+  const first = bg.ctx.runCapture('visible', OPTS, TAB.id); // a shortcut pressed twice
+  await bg.ctx.runCapture('visible', OPTS, TAB.id);
+  await first;
+  assert.deepStrictEqual(sent.filter((t) => t === 'capture-start' || t === 'capture-done'), ['capture-start', 'capture-done', 'capture-start', 'capture-done'],
+    'a popup showing the first would hear the second start before the first ended');
+});
+
+test('a popup shows a capture that starts while it is open, with its buttons greyed out', async () => {
+  const p = loadPopup('https://a.com/x'); // nothing running as it opens
+  await p.ready();
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
+  p.message({ type: 'capture-start' }); // a shortcut's
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [true, true, true], 'a press would start another capture');
+  assert.strictEqual(p.els.status.textContent, 'Capturing…');
+  p.message({ type: 'capture-progress', screen: 1, screens: 3 });
+  assert.strictEqual(p.els.status.textContent, 'Capturing screen 1 of 3…');
+  p.message({ type: 'capture-done', toClipboard: false });
+  assert.strictEqual(p.els.status.textContent, 'Saved.');
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
+});
+
+test('a popup showing a capture goes on to the one queued behind it', async () => {
+  const p = loadPopup('https://a.com/x', { running: true });
+  await p.ready();
+  p.message({ type: 'capture-done', toClipboard: false }); // the first ends
+  p.message({ type: 'capture-start' }); // and the one queued behind it starts
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [true, true, true], 'gave its buttons back while the second ran');
+  assert.strictEqual(p.els.status.textContent, 'Capturing…');
+  p.message({ type: 'capture-progress', screen: 2, screens: 4 });
+  assert.strictEqual(p.els.status.textContent, 'Capturing screen 2 of 4…');
+  p.message({ type: 'capture-done', toClipboard: false, error: 'Tabs cannot be edited right now' });
+  assert.strictEqual(p.els.err.textContent, 'Tabs cannot be edited right now');
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
+});
+
+test('a popup whose own capture waits its turn shows no other capture that starts meanwhile', async () => {
+  let answer;
+  const p = loadPopup('https://a.com/x', { reply: new Promise((r) => { answer = r; }) });
+  await p.ready();
+  const done = p.click('visible');
+  await settle();
+  p.message({ type: 'capture-start' }); // a capture ahead of this one in the queue starts
+  p.message({ type: 'capture-done', toClipboard: false, error: 'Tabs cannot be edited right now' }); // and ends
+  assert.strictEqual(p.els.status.textContent, 'Capturing…', 'showed another capture\'s end as its own');
+  assert.strictEqual(p.els.err.hidden, true, 'showed another capture\'s error as its own');
+  answer(true);
+  await done;
+  assert.strictEqual(p.els.status.textContent, 'Saved.');
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
+});

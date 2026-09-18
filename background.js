@@ -262,13 +262,13 @@ let runGate = Promise.resolve();
 // Whether a Visible or Full page is taking its turn, for a popup that opens
 // during it (KAN-545). Only the popup that sent a capture hears how it went,
 // in its answer, so the end of each one also goes out to every popup, for one
-// opened since. Nothing may be listening, as with its progress. A Region is
-// neither: its runCapture ends with the overlay up, and its shot waits for the
-// drag.
+// opened since. So does its start, for one that is already open (KAN-561).
+// Nothing may be listening, as with its progress. A Region is neither: its
+// runCapture ends with the overlay up, and its shot waits for the drag.
 let shooting = false;
 function runCapture(mode, opts, tabId, popupId) {
   const run = runGate.then(async () => {
-    if (mode !== 'region') shooting = true;
+    if (mode !== 'region') { shooting = true; chrome.runtime.sendMessage({ type: 'capture-start' }).catch(() => {}); }
     const tab = await getActiveTab(tabId);
     if (!tab) throw new Error('No tab to capture'); // flash the badge rather than do nothing
     await cancelRegion(tab); // an abandoned overlay would otherwise dim this shot
