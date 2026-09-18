@@ -26,8 +26,10 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
   let scriptTimeout; // SCRIPT_TIMEOUT_MS, likewise
   let pageScriptTimeout; // CAPTURE_SCRIPT_TIMEOUT_MS, likewise
+  let blipCeiling; // SCRIPT_TIMEOUT_MS + BLIP_HOLD_MS, likewise
   let now = 100000;
   let onMessage, onCommand;
+  const listeners = []; // every onMessage listener: a blip's hold adds its own
 
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; }
@@ -38,9 +40,14 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
   const chrome = {
     // The first message listener is background.js's own; Region adds more later.
     runtime: {
-      onMessage: { addListener: (fn) => { onMessage = onMessage || fn; }, removeListener() {} },
+      onMessage: {
+        addListener: (fn) => { onMessage = onMessage || fn; listeners.push(fn); },
+        removeListener: (fn) => { const i = listeners.indexOf(fn); if (i !== -1) listeners.splice(i, 1); },
+      },
       onStartup: { addListener() {} }, onInstalled: { addListener() {} },
-      sendMessage: async () => {},
+      // The page's blip reports through here, and Chrome hands a page's message
+      // to every listener the worker has.
+      sendMessage: async (m) => { if (m?.type === 'blip-done') listeners.slice().forEach((fn) => fn(m, {}, () => {})); },
     },
     commands: { onCommand: { addListener: (fn) => { onCommand = fn; } } },
     tabs: {
@@ -72,11 +79,12 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
   const context = {
     chrome, console: { ...console, error: () => {}, warn: () => {}, log: () => {} },
     URL, btoa, clearTimeout,
+    crypto: { randomUUID: () => 'blip-1' }, // the id a blip's report has to carry
     // Sleeps are the thing under test here, so record them and move the clock
-    // rather than actually waiting. The capture and page-script deadlines
-    // aren't sleeps: they are held until the test calls expire().
+    // rather than actually waiting. The capture and page-script deadlines, and
+    // the blip's ceiling, aren't sleeps: they are held until the test calls expire().
     setTimeout: (fn, ms) => {
-      if (ms === captureTimeout || ms === scriptTimeout || ms === pageScriptTimeout) { deadlines.push(fn); return; }
+      if (ms === captureTimeout || ms === scriptTimeout || ms === pageScriptTimeout || ms === blipCeiling) { deadlines.push(fn); return; }
       sleeps.push(ms || 0); now += ms || 0; fn();
     },
     // buildName still needs a real Date; only now() is under our control.
@@ -92,6 +100,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   scriptTimeout = vm.runInContext('SCRIPT_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
+  blipCeiling = vm.runInContext('SCRIPT_TIMEOUT_MS + BLIP_HOLD_MS', context);
   return {
     ctx: context, shots, badges, sleeps,
     message: (msg, respond = () => {}) => onMessage(msg, {}, respond), // respond gets the listener's answer
@@ -1482,6 +1491,11 @@ test('a start whose getUserMedia fails, with no Stop, still reports it', async (
   assert.strictEqual(errors[0]?.[1], refused, 'the error logged is not the one getUserMedia failed with');
 });
 
+// An element that can animate, the way loadBg's can't: its glow is over once
+// `ms` of the fake clock has passed, and the page then reports it.
+const animating = (bg, ms = vm.runInContext('BLIP_ANIM_MS', bg.ctx)) =>
+  () => ({ style: {}, remove() {}, animate: () => ({ finished: new Promise((r) => bg.ctx.setTimeout(r, ms)) }) });
+
 // --- a blip the page runs after its deadline --------------------------------
 // A start stops waiting for the edge-glow blip at its deadline and goes on to
 // the recorder. A page that only ran the blip script after that still showed
@@ -1491,7 +1505,7 @@ test('a blip the page runs after its deadline shows no glow', async () => {
   const bg = loadBg();
   const { chrome, document } = bg.ctx;
   const glows = [];
-  document.createElement = () => ({ style: {}, animate: () => ({}) });
+  document.createElement = animating(bg);
   document.documentElement.appendChild = (el) => glows.push(el);
   const run = chrome.scripting.executeScript;
   let runScript;
@@ -1508,7 +1522,7 @@ test('a blip the page runs before its deadline still shows its glow', async () =
   const bg = loadBg();
   const { chrome, document } = bg.ctx;
   const glows = [];
-  document.createElement = () => ({ style: {}, animate: () => ({}) });
+  document.createElement = animating(bg);
   document.documentElement.appendChild = (el) => glows.push(el);
   const run = chrome.scripting.executeScript;
   let runScript;
@@ -1518,6 +1532,69 @@ test('a blip the page runs before its deadline still shows its glow', async () =
   runScript(); // the page gets to the script a second before its deadline
   await blip;
   assert.strictEqual(glows.length, 1, 'the glow was skipped although the page ran the script in time');
+});
+
+// --- a glow whose animation starts late -------------------------------------
+// o.animate() doesn't paint when the script runs: the animation starts on the
+// page's next frame. The start timed its hold from the script, so on a page
+// too busy to draw, the glow could start after the hold was over and land in
+// the recording. The hold now ends on the page's own report that it's gone.
+
+test('a glow that finishes long after the script ran still holds the recorder', async () => {
+  const bg = loadBg();
+  const { chrome, document } = bg.ctx;
+  keepStore(chrome); // the start reads `rec` back before it starts the recorder
+  chrome.offscreen = { hasDocument: async () => true };
+  let finish, startedAt;
+  // The page runs the script, but is too busy to give the animation a frame.
+  document.createElement = () => ({ style: {}, remove() {}, animate: () => ({ finished: new Promise((r) => { finish = r; }) }) });
+  const deliver = chrome.runtime.sendMessage;
+  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') startedAt = bg.ctx.Date.now(); return deliver(m); };
+  const start = bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
+  await settle();
+  assert.strictEqual(startedAt, undefined, 'the recorder started while the glow had yet to play');
+  bg.tick(1500); // the page frees up; the glow plays and is gone
+  const gone = bg.ctx.Date.now();
+  finish();
+  await start;
+  assert.ok(startedAt >= gone, 'the recorder started before the page said its glow was gone');
+});
+
+test('a page that runs the blip after its deadline holds the recorder for nothing', async () => {
+  const bg = loadBg();
+  const { chrome, document } = bg.ctx;
+  const glows = [];
+  document.createElement = animating(bg);
+  document.documentElement.appendChild = (el) => glows.push(el);
+  const run = chrome.scripting.executeScript;
+  let runScript;
+  chrome.scripting.executeScript = (o) => new Promise((res) => { runScript = () => res(run(o)); }); // the page is busy until runScript()
+  let over = false;
+  bg.ctx.blipRecordingIndicator(TAB.id).then(() => { over = true; });
+  await settle();
+  bg.tick(vm.runInContext('SCRIPT_TIMEOUT_MS', bg.ctx) + 500); // past the deadline
+  const answered = bg.ctx.Date.now();
+  runScript(); // only now does the page get to the script, and it shows nothing
+  await settle();
+  assert.deepStrictEqual(glows, [], 'the glow showed after the deadline');
+  assert.ok(over, 'the start was held for a glow the page never showed');
+  assert.strictEqual(bg.ctx.Date.now(), answered, 'the start waited out a glow the page never showed');
+});
+
+test('a report from another blip does not end this one\'s hold', async () => {
+  const bg = loadBg();
+  const { chrome, document } = bg.ctx;
+  let finish;
+  document.createElement = () => ({ style: {}, remove() {}, animate: () => ({ finished: new Promise((r) => { finish = r; }) }) });
+  let over = false;
+  bg.ctx.blipRecordingIndicator(TAB.id).then(() => { over = true; });
+  await settle();
+  await chrome.runtime.sendMessage({ type: 'blip-done', id: 'an-earlier-blip' }); // a page from a start before this one
+  await settle();
+  assert.strictEqual(over, false, 'another blip\'s report ended this one\'s hold');
+  finish(); // this page's own glow is gone
+  await settle();
+  assert.strictEqual(over, true, 'this blip\'s own report did not end its hold');
 });
 
 // --- a start that doesn't wait for the blip's glow --------------------------
@@ -1533,9 +1610,10 @@ test('a start waits for the blip\'s glow to finish before it starts the recorder
   chrome.offscreen = { hasDocument: async () => true };
   const glows = [];
   let startedAt;
-  document.createElement = () => ({ style: {}, animate: () => ({}) });
+  document.createElement = animating(bg);
   document.documentElement.appendChild = () => glows.push(bg.ctx.Date.now());
-  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') startedAt = bg.ctx.Date.now(); };
+  const deliver = chrome.runtime.sendMessage; // the page's report still has to reach the worker
+  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') startedAt = bg.ctx.Date.now(); return deliver(m); };
   await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
   assert.strictEqual(glows.length, 1, 'the blip showed no glow');
   assert.ok(startedAt !== undefined, 'the recording was never started');
@@ -1614,9 +1692,10 @@ test('a start holds the recorder for a glow the page showed just before the blip
   chrome.offscreen = { hasDocument: async () => true };
   const glows = [];
   let startedAt;
-  document.createElement = () => ({ style: {}, animate: () => ({}) });
+  document.createElement = animating(bg);
   document.documentElement.appendChild = () => glows.push(bg.ctx.Date.now());
-  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') startedAt = bg.ctx.Date.now(); };
+  const deliver = chrome.runtime.sendMessage; // the page's report still has to reach the worker
+  chrome.runtime.sendMessage = async (m) => { if (m.type === 'rec-start-offscreen') startedAt = bg.ctx.Date.now(); return deliver(m); };
   const run = chrome.scripting.executeScript;
   let calls = 0;
   // The page runs the blip 100 ms before its deadline, and its answer never arrives.
@@ -1644,12 +1723,14 @@ test('a start on a page that refuses scripts holds the recorder for nothing', as
   assert.strictEqual(startedAt, pressed, 'the recorder waited out a glow the page never showed');
 });
 
-test('a blip the page answers in time leaves the start nothing to hold for', async () => {
+test('a blip the page answers and reports in time leaves the start nothing to hold for', async () => {
   const bg = loadBg();
   const { document } = bg.ctx;
-  document.createElement = () => ({ style: {}, animate: () => ({}) });
-  const held = await bg.ctx.blipRecordingIndicator(TAB.id); // the glow faded inside the blip's own wait
-  assert.strictEqual(held, 0, 'the start was told to hold on for a glow that had already gone');
+  document.createElement = animating(bg);
+  let over = false;
+  bg.ctx.blipRecordingIndicator(TAB.id).then(() => { over = true; });
+  await settle(); // the page ran the script, and its glow has faded
+  assert.ok(over, 'the start was held for a glow the page had already said was gone');
 });
 
 // --- a GIF start whose video never loads ------------------------------------
