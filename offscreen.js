@@ -366,7 +366,7 @@ openDB().then((db) => {
   store.getAll().onsuccess = (e) => {
     const vals = e.target.result;
     if (vals.length === 0) return;
-    store.getAllKeys().onsuccess = (k) => {
+    store.getAllKeys().onsuccess = async (k) => {
       const keys = k.target.result;
       const metaIdx = keys.indexOf('meta');
       if (metaIdx === -1) return;
@@ -374,7 +374,8 @@ openDB().then((db) => {
       const chunks = vals.filter((_, i) => i !== metaIdx);
       if (chunks.length > 0) {
         log('Recovered left-over recording', chunks.length, 'chunks, format', meta.format);
-        download(new Blob(chunks, { type: `video/${meta.format}` }), `recovered-shot.${meta.format}`);
+        const blob = meta.format === 'webm' ? await withDuration(chunks, chunks.length * 1000) : new Blob(chunks, { type: `video/${meta.format}` });
+        download(blob, `recovered-shot.${meta.format}`);
       }
       db.transaction('recordings', 'readwrite').objectStore('recordings').clear();
     };
