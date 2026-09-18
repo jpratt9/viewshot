@@ -253,6 +253,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
   const writes = [];
   const streams = [];
   let onStored; // popup.js's chrome.storage.local.onChanged listener
+  let onMessage; // popup.js's chrome.runtime.onMessage listener: the worker's clipboard write
   const makeEl = () => {
     const el = {
       style: {}, dataset: {}, listeners: {},
@@ -289,7 +290,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
       },
       // the worker's answer. The popup's startup rec-check is the worker's
       // business, not this file's, so it is left out of `sent`.
-      runtime: { onMessage: { addListener: () => {} }, sendMessage: async (m) => { if (m.type !== 'rec-check') sent.push(m); if (reply instanceof Error) throw reply; return reply; } },
+      runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, sendMessage: async (m) => { if (m.type !== 'rec-check') sent.push(m); if (reply instanceof Error) throw reply; return reply; } },
       tabCapture: { getMediaStreamId: async () => { streams.push('requested'); if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
     },
@@ -299,11 +300,12 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
   vm.runInContext(read('popup.js'), context);
   const btn = (mode) => modes.find((b) => b.dataset.mode === mode);
   return {
-    els, sent, btn, writes, streams,
+    ctx: context, els, sent, btn, writes, streams,
     ready: settle, // let load() resolve so activeTab is populated
     click: (mode) => btn(mode).listeners.click[0](),
     stop: () => els.stopBtn.listeners.click[0](),
     stored: (changes) => onStored?.(changes), // storage changing while the popup is open
+    message: (msg, respond = () => {}) => onMessage(msg, {}, respond), // a worker's message reaching the popup
   };
 }
 
@@ -1488,6 +1490,72 @@ test('the document answers with the same id for as long as it lives', async () =
   o.recorders[0].finish();
   await settle();
   assert.strictEqual(docId(o), 'doc-1', 'a saved recording took the document\'s name with it');
+});
+
+// --- whose clipboard write it is ---------------------------------------------
+// Chrome hands a worker's message to every extension page. The worker's first
+// clipboard try is for the popup, and a document held open by a recording
+// answered it too - with its focus error - and when that answer came first the
+// popup's copy was thrown away and the badge showed ! (KAN-489).
+
+// A context's clipboard, with `write` standing in for its navigator.clipboard.write.
+const clipboard = (write) => ({ fetch: async () => ({ blob: async () => ({}) }), ClipboardItem: class {}, navigator: { clipboard: { write } } });
+const unfocused = async () => { throw new Error("Failed to execute 'write' on 'Clipboard': Document is not focused."); };
+// The worker's sendMessage as Chrome delivers it: to every page that is open,
+// resolving with the first answer, or undefined when none holds the port open.
+const route = (...pages) => (m) => new Promise((resolve) => {
+  let answered = false;
+  const respond = (a) => { if (!answered) { answered = true; resolve(a); } };
+  if (!pages.map((page) => page.message(m, respond)).includes(true)) respond(undefined);
+});
+
+test("the document leaves the popup's clipboard write to the popup", async () => {
+  const o = loadOffscreen();
+  const answers = [];
+  const held = o.message({ type: 'shot-clipboard', dataUrl: PNG }, (a) => answers.push(a));
+  await settle();
+  assert.notStrictEqual(held, true, 'it held the port open for a write that was not its own');
+  assert.deepStrictEqual(answers, [], "it answered the popup's write");
+});
+
+test('the document still answers its own clipboard write', async () => {
+  const o = loadOffscreen();
+  Object.assign(o.ctx, clipboard(async () => {}));
+  const answers = [];
+  assert.strictEqual(o.message({ type: 'shot-clipboard-offscreen', dataUrl: PNG }, (a) => answers.push(a)), true);
+  await settle();
+  assert.deepStrictEqual(answers, ['done']);
+});
+
+// Both at once, with a recording holding the document open. Its write fails at
+// once, for want of focus, while the popup's is still going.
+test("a copy with the popup open takes the popup's answer, not the recording document's", async () => {
+  const bg = loadBg();
+  const p = loadPopup('https://a.com');
+  const o = loadOffscreen();
+  const copied = [];
+  Object.assign(p.ctx, clipboard(() => new Promise((r) => setImmediate(() => { copied.push('popup'); r(); }))));
+  Object.assign(o.ctx, clipboard(() => { copied.push('document'); return unfocused(); }));
+  bg.ctx.chrome.offscreen = { hasDocument: async () => true, closeDocument: async () => {} };
+  bg.ctx.chrome.runtime.sendMessage = route(p, o);
+  await assert.doesNotReject(bg.ctx.copyImage(PNG, TAB.id), "the document's error beat the popup's copy");
+  assert.deepStrictEqual(copied, ['popup']);
+});
+
+// With the popup closed, the document's answer ended the copy before the tab,
+// which has the focus a shortcut leaves it with, was ever tried.
+test('a copy with the popup closed goes on to the tab past the recording document', async () => {
+  const bg = loadBg();
+  const o = loadOffscreen();
+  const copied = [];
+  Object.assign(bg.ctx, clipboard(async () => { copied.push('tab'); })); // the injected write runs here
+  Object.assign(o.ctx, clipboard(() => { copied.push('document'); return unfocused(); }));
+  // executeScript answers with what the injected function resolves to.
+  bg.ctx.chrome.scripting.executeScript = async (inj) => [{ result: await inj.func(...inj.args) }];
+  bg.ctx.chrome.offscreen = { hasDocument: async () => true, closeDocument: async () => {} };
+  bg.ctx.chrome.runtime.sendMessage = route(o);
+  await assert.doesNotReject(bg.ctx.copyImage(PNG, TAB.id), "the document's error ended the copy before the tab was tried");
+  assert.deepStrictEqual(copied, ['tab']);
 });
 
 test('a GIF keeps its document busy from its stop until the download is done with the file', async () => {

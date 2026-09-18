@@ -25,7 +25,10 @@ function load({ hasDoc = false, rec = null, createRejects = false, docId = null 
         // never answers the question - it is only ever asked of a document a
         // recording was written down against.
         if (m.type === 'offscreen-id') return docId;
-        if (m.type === 'shot-clipboard') {
+        // No popup is open here: the popup's write goes unanswered, and only the
+        // document answers its own.
+        if (m.type === 'shot-clipboard') throw new Error('Could not establish connection. Receiving end does not exist.');
+        if (m.type === 'shot-clipboard-offscreen') {
           if (!docExists) throw new Error('Could not establish connection. Receiving end does not exist.');
           return 'done';
         }
@@ -108,7 +111,7 @@ test('waits for the clipboard write to be acknowledged before closing', async ()
   const { ctx, calls } = load();
   await ctx.copyImage(PNG);
   const order = calls.sent.map((m) => m.type);
-  assert.ok(order.includes('shot-clipboard'), 'the write is sent');
+  assert.ok(order.includes('shot-clipboard-offscreen'), 'the write is sent');
   assert.strictEqual(calls.close, 1, 'and only then is the document closed');
 });
 
@@ -180,10 +183,8 @@ test('a saved recording leaves the document to a clipboard write still under way
   let answer;
   ctx.chrome.runtime.sendMessage = async (m) => {
     calls.sent.push(m);
-    if (m.type === 'shot-clipboard') {
-      if (calls.create === 0) throw new Error('Receiving end does not exist.');
-      return new Promise((r) => { answer = r; });
-    }
+    if (m.type === 'shot-clipboard') throw new Error('Receiving end does not exist.'); // no popup
+    if (m.type === 'shot-clipboard-offscreen') return new Promise((r) => { answer = r; });
     return m.type === 'offscreen-ping' ? 'pong' : 'done';
   };
   const copy = ctx.copyImage(PNG);
