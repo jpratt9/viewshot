@@ -349,55 +349,6 @@ function measurePage() {
   // one left before KAN-600 doesn't turn snapping off (KAN-607). It goes first
   // again too: the page may have put its own layers in front of it since, and
   // one left before KAN-582 sits at the end of <head> (KAN-611).
-  let style = document.getElementById('__vsAnchor');
-  if (!style) {
-    style = document.createElement('style');
-    style.id = '__vsAnchor';
-  }
-  const root = document.documentElement;
-  root.prepend(style);
-  style.textContent = '@layer{*{overflow-anchor:auto!important;scroll-snap-type:none!important}}';
-  // It stays first while the page is shot: a page that puts a style sheet of
-  // its own in front of it, on a scroll say, declares its layer first from
-  // then on, and that layer's `!important` wins (KAN-615). The observer puts
-  // the rule back in front as soon as the page's script that did it has run,
-  // before the browser next lays the page out. The cleanup scroll disconnects
-  // it. One a capture that died left connected is disconnected here, or it
-  // would put the rule back once this capture's cleanup took it out.
-  window.__vsAnchorObserver?.disconnect();
-  let __vsAnchorMoves = 0;
-  window.__vsAnchored = window.__vsAnchored || [];
-
-  const overrideStyle = (node) => {
-    for (const [name, own] of [['overflow-anchor', 'auto'], ['scroll-snap-type', 'none']]) {
-      const value = node.style.getPropertyValue(name);
-      if (value === own || node.style.getPropertyPriority(name) !== 'important') continue;
-      window.__vsAnchored.push([node, value, name]);
-      node.style.setProperty(name, own, 'important');
-    }
-  };
-
-  window.__vsAnchorObserver = new MutationObserver((records) => {
-    if (root.firstChild !== style) {
-      if (++__vsAnchorMoves > 10) window.__vsAnchorObserver.disconnect();
-      else root.prepend(style);
-    }
-    for (const r of records) {
-      if (r.type === 'attributes' && r.attributeName === 'style' && r.target.style) {
-        overrideStyle(r.target);
-      }
-    }
-  });
-  window.__vsAnchorObserver.observe(root, { childList: true, attributes: true, attributeFilter: ['style'], subtree: true });
-  // A page's own `!important` in a style attribute outranks every style sheet
-  // rule, so each element with one gets the capture's own inline
-  // `auto !important`, and the cleanup scroll puts the page's back (KAN-583).
-  // Snapping gets the same, with `none !important` (KAN-606).
-  // A list a capture that died left behind is kept, so those get theirs back.
-  // One left before KAN-606 doesn't name the property: it only held anchoring.
-  for (const name of ['overflow-anchor', 'scroll-snap-type']) {
-    for (const node of document.querySelectorAll(`[style*="${name}" i]`)) overrideStyle(node);
-  }
   const de = document.documentElement, b = document.body;
   let el = de.scrollHeight > de.clientHeight + 1 ? de
          : (b && b.scrollHeight > b.clientHeight + 1) ? b
@@ -444,11 +395,6 @@ function scrollAndReport(to, cleanup, last) {
   }
   if (cleanup) {
     delete window.__vsScroller;
-    window.__vsAnchorObserver?.disconnect();
-    delete window.__vsAnchorObserver;
-    document.getElementById('__vsAnchor')?.remove();
-    for (const [node, value, name = 'overflow-anchor'] of window.__vsAnchored || []) node.style.setProperty(name, value, 'important');
-    delete window.__vsAnchored;
   }
   const isRoot = el === de || el === b || el === document.scrollingElement;
   // Where the last slice's rows are now, before the page moves. With `last`,
@@ -517,6 +463,9 @@ async function scrollPageTo(tab, y, cleanup = false, last = null) {
 const MAX_SIDE = { png: 65535, jpg: 65500, webp: 16383 };
 const MAX_AREA = 268435456;
 async function captureFullPage(tab, format, popupId) {
+  const CSS = '* { overflow-anchor: auto !important; scroll-snap-type: none !important; }';
+  await chrome.scripting.insertCSS({ target: { tabId: tab.id }, css: CSS, origin: 'USER' }).catch(() => {});
+
   const [{ result: m }] = await scriptWithTimeout({
     target: { tabId: tab.id },
     func: measurePage,
@@ -724,6 +673,7 @@ async function captureFullPage(tab, format, popupId) {
   } finally {
     if (hid) await restoreFixedAndSticky(tab); // restore
     await scrollPageTo(tab, m.prevY, true);
+    chrome.scripting.removeCSS({ target: { tabId: tab.id }, css: CSS, origin: 'USER' }).catch(() => {});
   }
 
   // Trim to what was actually stitched, so an early stop yields a short correct

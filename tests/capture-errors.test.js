@@ -61,7 +61,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
         return PNG;
       },
     },
-    scripting: {
+    scripting: { insertCSS: async () => {}, removeCSS: async () => {},
       executeScript: async (o) => {
         if (scriptFails) throw new Error('Cannot access a chrome:// URL');
         if (scriptHangs) return new Promise(() => {}); // main thread blocked: the page never runs it
@@ -330,7 +330,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
       // A script on the page: Chrome refuses one with `scriptError`, as its
       // error page does (KAN-546).
-      scripting: { executeScript: async (o) => { scripts.push(o.target.tabId); if (scriptError) throw new Error(scriptError); return [{}]; } },
+      scripting: { insertCSS: async () => {}, removeCSS: async () => {}, executeScript: async (o) => { scripts.push(o.target.tabId); if (scriptError) throw new Error(scriptError); return [{}]; } },
     },
     localStorage: { getItem: () => null, setItem: () => {} },
     crypto: { randomUUID: () => 'popup-1' }, // the id this popup's captures carry (KAN-552)

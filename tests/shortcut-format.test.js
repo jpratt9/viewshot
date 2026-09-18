@@ -34,7 +34,7 @@ async function pressShortcut(command, format) {
       query: async () => [{ id: 7, windowId: 1, url: 'https://a.com', title: 'T' }],
       captureVisibleTab: async () => 'data:image/png;base64,AAAA',
     },
-    scripting: { executeScript: async () => [{}] },
+    scripting: { insertCSS: async () => {}, removeCSS: async () => {}, executeScript: async () => [{}] },
     downloads: { download: async (o) => { downloads.push(o); } },
     storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({ opts: { format, filename: 'shot' } }) } },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },

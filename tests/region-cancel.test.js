@@ -37,7 +37,7 @@ function loadBg({ scriptFails = false } = {}) {
       query: async () => [TAB],
       captureVisibleTab: async () => { order.push('capture'); return PNG; },
     },
-    scripting: {
+    scripting: { insertCSS: async () => {}, removeCSS: async () => {},
       executeScript: async (o) => {
         const isCancel = o.func && String(o.func).includes('__shotRegionCancel');
         order.push(o.files ? `inject:${o.files[0]}` : isCancel ? 'cancel' : `func:${o.func.name || 'anon'}`);
