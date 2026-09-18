@@ -176,12 +176,13 @@ The rows each header shows in:
 
 None.
 
-## Open questions
+## Open questions — settled
 
-1. **Should a component with a closed shadow root be covered too?**
+This was left out of the change and filed instead, the way KAN-509 itself came out of KAN-507's plan. The ticket's fix direction is `assignedSlot`, and that is what shipped. Covering a closed root takes a second way in, which the ticket didn't ask for.
+
+1. **Should a component with a closed shadow root be covered too?** Not in this change. It is filed as **KAN-511**, which is blocked by KAN-509.
    - The ticket is about any web component, but its fix direction is `p.assignedSlot ||`, and `assignedSlot` only answers for an open root. In Chrome 153 it reads `null` for an element slotted into a closed root, even from the extension's isolated world. So with this plan, `#closedIn` is still left out of the image.
    - **What covering it would take:**
      - At each climb step, whenever the parent hosts a shadow root, get that root with `chrome.dom.openOrClosedShadowRoot` and find the `<slot>` whose `assignedElements()` holds the element.
      - The probe found `#closedIn` that way.
      - That is a second way in beside `assignedSlot`, a few lines in `markSticky`, and a closed-root case in the test.
-   - The plan stays with the ticket's fix direction until this is answered.
