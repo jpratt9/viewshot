@@ -326,7 +326,7 @@ function scrollAndReport(to) {
   // still sees the old offset, and the stitch stops after the first screen.
   el.scrollTo({ top: to, behavior: 'instant' });
   if (isRoot) window.scrollTo({ left: 0, top: to, behavior: 'instant' }); // no-op unless the document itself is the scroller
-  return el.scrollTop;
+  return { actual: el.scrollTop, total: el.scrollHeight };
 }
 
 // Ask the page for a frame. A window that isn't drawing - minimized, occluded -
@@ -355,7 +355,7 @@ async function scrollPageTo(tab, y) {
   const [{ result }] = await scriptWithTimeout({
     target: { tabId: tab.id }, func: scrollAndReport, args: [y],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
-  return result || 0;
+  return result || { actual: 0, total: 0 };
 }
 
 // ---- full page: scroll the viewport and stitch ----
@@ -379,18 +379,18 @@ async function captureFullPage(tab, format) {
   const h = Math.round(pageHeight * m.dpr);
   const side = MAX_SIDE[format] || MAX_SIDE.png; // a recording format is saved as PNG
   const scale = Math.min(1, side / w, side / h, Math.sqrt(MAX_AREA / (w * h)));
-  const canvas = new OffscreenCanvas(Math.floor(w * scale), Math.floor(h * scale));
-  const ctx = canvas.getContext('2d');
-  const positions = [...new Set(
-    Array.from({ length: Math.ceil(m.total / m.vh) }, (_, i) => Math.min(i * m.vh, Math.max(0, m.total - m.vh)))
-  )];
+  let canvas = new OffscreenCanvas(Math.floor(w * scale), Math.floor(h * scale));
+  let ctx = canvas.getContext('2d');
+  const maxCanvasHeight = Math.floor(Math.min(side, MAX_AREA / (w * scale)));
 
-  let hid = false, landed = 0;
+  let hid = false, landed = 0, target = 0, i = 0;
+  let footerCanvas = null;
   // finally: a slice that throws part-way must still put the page back, not
   // leave it scrolled to where the stitch stopped with its headers hidden.
   try {
-    for (let i = 0; i < positions.length; i++) {
-      const actual = await scrollPageTo(tab, positions[i]);
+    while (true) {
+      const { actual, total } = await scrollPageTo(tab, target);
+      m.total = total;
       // The page refused to advance (unscrollable, or a scroller we can't drive).
       // Stop rather than stack the same viewport down the canvas.
       if (i > 0 && actual <= landed) break;
@@ -398,7 +398,7 @@ async function captureFullPage(tab, format) {
       // The sticky elements that stick to the page, listed on the first slice
       // and added to on every later one (KAN-503). From here on there is
       // something for the finally to put back.
-      if (positions.length > 1) { await markSticky(tab, i === 0); hid = true; }
+      if (m.total > m.vh) { await markSticky(tab, i === 0); hid = true; }
       // Keep fixed elements (pinned headers, banners) on the FIRST slice only;
       // hide them on later slices so they aren't stitched in repeatedly, and
       // on each one the ones that have turned up since (KAN-516).
@@ -441,18 +441,54 @@ async function captureFullPage(tab, format) {
           const footerTop = Math.round(Math.min(m.winH, m.rect.bottom) * m.dpr);
           const drawFooterH = Math.max(0, bmp.height - footerTop);
           if (drawFooterH > 0) {
-            const drawFooterTop = Math.round((Math.max(0, m.rect.top) + m.total) * m.dpr * scale);
-            ctx.drawImage(bmp, 0, footerTop, bmp.width, drawFooterH, 0, drawFooterTop, Math.round(bmp.width * scale), Math.round(drawFooterH * scale));
+            footerCanvas = new OffscreenCanvas(Math.round(bmp.width * scale), Math.round(drawFooterH * scale));
+            footerCanvas.getContext('2d').drawImage(bmp, 0, footerTop, bmp.width, drawFooterH, 0, 0, footerCanvas.width, footerCanvas.height);
           }
         }
         const sliceTop = Math.round(Math.max(0, m.rect.top) * m.dpr);
         const sliceBottom = Math.round(Math.min(m.winH, m.rect.bottom) * m.dpr);
         const sliceH = Math.max(0, sliceBottom - sliceTop);
         const drawTop = Math.round((Math.max(0, m.rect.top) + actual) * m.dpr * scale);
-        ctx.drawImage(bmp, 0, sliceTop, bmp.width, sliceH, 0, drawTop, Math.round(bmp.width * scale), Math.round((Math.max(0, m.rect.top) + actual) * m.dpr * scale + sliceH * scale) - drawTop);
+        const drawBottom = Math.round((Math.max(0, m.rect.top) + actual) * m.dpr * scale + sliceH * scale);
+        
+        if (drawBottom > canvas.height) {
+          if (drawBottom > maxCanvasHeight) break;
+          const newCanvas = new OffscreenCanvas(canvas.width, Math.min(maxCanvasHeight, drawBottom + 2000));
+          newCanvas.getContext('2d').drawImage(canvas, 0, 0);
+          canvas = newCanvas;
+          ctx = canvas.getContext('2d');
+        }
+        ctx.drawImage(bmp, 0, sliceTop, bmp.width, sliceH, 0, drawTop, Math.round(bmp.width * scale), drawBottom - drawTop);
       } else {
         const top = Math.round(actual * m.dpr * scale);
-        ctx.drawImage(bmp, 0, top, Math.round(bmp.width * scale), Math.round((actual * m.dpr + bmp.height) * scale) - top); // where it really is, not where we asked
+        const bottom = Math.round((actual * m.dpr + bmp.height) * scale);
+        
+        if (bottom > canvas.height) {
+          if (bottom > maxCanvasHeight) break;
+          const newCanvas = new OffscreenCanvas(canvas.width, Math.min(maxCanvasHeight, bottom + 2000));
+          newCanvas.getContext('2d').drawImage(canvas, 0, 0);
+          canvas = newCanvas;
+          ctx = canvas.getContext('2d');
+        }
+        ctx.drawImage(bmp, 0, top, Math.round(bmp.width * scale), bottom - top); // where it really is, not where we asked
+      }
+
+      if (actual >= m.total - m.vh) break;
+      target = Math.min(target + m.vh, Math.max(0, m.total - m.vh));
+      i++;
+    }
+
+    if (footerCanvas) {
+      const drawFooterTop = Math.round((Math.max(0, m.rect.top) + m.total) * m.dpr * scale);
+      const finalHeight = drawFooterTop + footerCanvas.height;
+      if (finalHeight > canvas.height && drawFooterTop <= maxCanvasHeight) {
+        const newCanvas = new OffscreenCanvas(canvas.width, Math.min(maxCanvasHeight, finalHeight));
+        newCanvas.getContext('2d').drawImage(canvas, 0, 0);
+        canvas = newCanvas;
+        ctx = canvas.getContext('2d');
+      }
+      if (drawFooterTop <= maxCanvasHeight) {
+        ctx.drawImage(footerCanvas, 0, drawFooterTop);
       }
     }
   } finally {

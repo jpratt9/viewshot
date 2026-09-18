@@ -170,18 +170,18 @@ test('falls back to scrollingElement when nothing overflows', () => {
 test('scrolling a body-scroller page moves it and reports the new offset', () => {
   const body = el(3052, 767);
   const { ctx } = load({ de: el(767, 767), body });
-  assert.strictEqual(ctx.scrollAndReport(1534), 1534);
+  assert.strictEqual(ctx.scrollAndReport(1534).actual, 1534);
   assert.strictEqual(body.scrollTop, 1534);
 });
 
 test('a request past the end reports the clamped offset, not the request', () => {
   const { ctx } = load({ de: el(767, 767), body: el(3052, 767) });
-  assert.strictEqual(ctx.scrollAndReport(99999), 3052 - 767);
+  assert.strictEqual(ctx.scrollAndReport(99999).actual, 3052 - 767);
 });
 
 test('a page that refuses to scroll reports 0 rather than the request', () => {
   const { ctx } = load({ de: lockedEl(3052, 767), body: el(767, 767) });
-  assert.strictEqual(ctx.scrollAndReport(1534), 0);
+  assert.strictEqual(ctx.scrollAndReport(1534).actual, 0);
 });
 
 // --- the stitch itself -----------------------------------------------------
@@ -298,7 +298,7 @@ test('a scaled page that stops early is trimmed at the same scale', async () => 
 test('scrolling a smooth-scrolling page lands before it reports', () => {
   const de = smoothEl(3000, 800);
   const { ctx } = load({ de, body: el(3000, 3000), ih: 800, dpr: 1 });
-  assert.strictEqual(ctx.scrollAndReport(1600), 1600);
+  assert.strictEqual(ctx.scrollAndReport(1600).actual, 1600);
   assert.strictEqual(de.scrollTop, 1600);
 });
 
@@ -306,7 +306,7 @@ test('a smooth-scrolling body scroller also lands before it reports', () => {
   // html,body{height:100%;overflow-x:hidden} with body{scroll-behavior:smooth}.
   const body = smoothEl(3052, 767);
   const { ctx } = load({ de: el(767, 767), body });
-  assert.strictEqual(ctx.scrollAndReport(1534), 1534);
+  assert.strictEqual(ctx.scrollAndReport(1534).actual, 1534);
   assert.strictEqual(body.scrollTop, 1534);
 });
 

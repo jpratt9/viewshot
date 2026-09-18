@@ -110,11 +110,9 @@ test('captureFullPage with inner scroller exceeding viewport at top', async () =
   // pageHeight = 0 + 3000 + 67 = 3067
   assert.strictEqual(canvases[0].height, 3067 * 2);
   
-  const draws = canvases[0].draws;
-  // first draw is footer (since headerH = 0), then slice
-  const footerDraw = draws[0];
-  assert.strictEqual(footerDraw.sh, 67 * 2);
-  const sliceDraw = draws[1];
+  const sliceDraw = canvases[0].draws[0];
   assert.strictEqual(sliceDraw.sy, 0); // sliceTop = Math.max(0, -100) = 0
   assert.strictEqual(sliceDraw.sh, 700 * 2); // sliceBottom(700) - 0
+  const footerDraw = canvases[1].draws[0];
+  assert.strictEqual(footerDraw.sh, 67 * 2);
 });
