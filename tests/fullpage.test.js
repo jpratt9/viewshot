@@ -354,6 +354,8 @@ test('stops rather than stitch in a tab the user switched to', async () => {
 // in (KAN-403): a sticky element is hidden only in the slices it is stuck in.
 // A `bottom` one can be stuck already at the top of the page, so each one's
 // place is read as `static`, and the first slice is checked too (KAN-501).
+// And a place can move while the capture runs, so it is read on every slice
+// (KAN-502).
 
 // Keeps what the capture did to the element's visibility, in order, and holds
 // the inline `position` a capture sets on it and puts back.
@@ -413,6 +415,26 @@ test('hides a sticky heading only in the slices it is stuck in', async () => {
   assert.strictEqual(heading.style.visibility, '', 'left the heading hidden');
 });
 
+test('shows a sticky heading in the slice that holds its place after the place moves', async () => {
+  // The same page, but content above the heading loads in once the page
+  // scrolls, the way a lazy image does, and pushes it 300 px down: its place
+  // goes from 1200 px to 1500, and its container's end from 2600 to 2900. The
+  // place read at the top is not where the page has it by then (KAN-502).
+  const body = el(3000, 713);
+  const heading = positioned('sticky');
+  heading.getBoundingClientRect = () => {
+    const y = body.scrollTop, at = y ? 1500 : 1200;
+    const top = heading.style.getPropertyValue('position') === 'static' ? at - y : Math.min(Math.max(at - y, 0), at + 1400 - 40 - y);
+    return { top, bottom: top + 40 };
+  };
+  const { ctx, captureAt, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [heading] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287]);
+  // In its new place in the third slice, stuck at the top of the last two.
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', '', 'hidden', 'hidden'], 'blanked the heading out of the slice that holds its new place, or stitched it in where it was stuck');
+  assert.strictEqual(heading.style.visibility, '', 'left the heading hidden');
+});
+
 test('leaves a sticky element that is never stuck alone', async () => {
   const body = el(3052, 767);
   const heading = stickyAt(body, 900, 940); // its container ends where it does, so it only ever scrolls by
@@ -434,9 +456,9 @@ test('gives a sticky element back its own visibility, in its place and after the
 test('counts a sticky element within a pixel of its place as in it', async () => {
   const body = el(3052, 767);
   const heading = stickyAt(body, 900, 940); // never stuck
-  // Rects and scroll offsets are fractional: once the page has scrolled, this one reads half a pixel off.
+  // Rects are fractional: once the page has scrolled, this one is painted half a pixel off where `static` puts it.
   const exact = heading.getBoundingClientRect;
-  heading.getBoundingClientRect = () => { const r = exact(); const d = body.scrollTop ? 0.5 : 0; return { top: r.top + d, bottom: r.bottom + d }; };
+  heading.getBoundingClientRect = () => { const r = exact(); const d = body.scrollTop && heading.style.getPropertyValue('position') !== 'static' ? 0.5 : 0; return { top: r.top + d, bottom: r.bottom + d }; };
   const { ctx } = load({ de: el(767, 767), body, fixed: [heading] });
   await ctx.captureFullPage(TAB);
   assert.ok(!heading.seen.includes('hidden'), 'blanked a sticky element half a pixel from its place');

@@ -368,15 +368,15 @@ async function captureFullPage(tab, format) {
       // Stop rather than stack the same viewport down the canvas.
       if (i > 0 && actual <= landed) break;
       landed = actual;
-      // Where each sticky element sits, read while the page is still at the
-      // top. From here on there is something for the finally to put back.
-      if (i === 0 && positions.length > 1) { await markSticky(tab, actual); hid = true; }
+      // The sticky elements that stick to the page, listed on the first slice.
+      // From here on there is something for the finally to put back.
+      if (i === 0 && positions.length > 1) { await markSticky(tab); hid = true; }
       // Keep fixed elements (pinned headers, banners) on the FIRST slice only;
       // hide them on later slices so they aren't stitched in repeatedly.
       if (i === 1) await setFixedHidden(tab, true);
       // Sticky ones only in the slices they are stuck in (KAN-403), the first
       // included: a `bottom` one can be stuck there already (KAN-501).
-      if (hid) await hideStuckSticky(tab, actual);
+      if (hid) await hideStuckSticky(tab);
       await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
       // captureVisibleTab hands back the last frame the window presented. A
       // window that isn't drawing - minimized, occluded - presents none, so
@@ -422,14 +422,12 @@ async function captureFullPage(tab, format) {
 // sidebar further down in the slices after the one that holds its place.
 // Hiding every sticky element blanked those out of the image (KAN-218), and
 // hiding only the ones the first screen showed stitched them in again at the
-// top of every slice they stayed stuck in (KAN-403). So each one's place is
-// read at the top of the page, and each slice hides the ones that are away
-// from it. `offset` is where the stitch landed, not window.scrollY, which
-// reads 0 on a page whose <body> is what scrolls (see measurePage).
-async function markSticky(tab, offset) {
+// top of every slice they stayed stuck in (KAN-403). So each slice hides the
+// ones that are away from their place (see hideStuckSticky).
+async function markSticky(tab) {
   await scriptWithTimeout({
     target: { tabId: tab.id },
-    func: (y) => {
+    func: () => {
       const list = [];
       // querySelectorAll doesn't go into a shadow root, so each one it passes
       // is searched in turn, closed ones too (KAN-507). chrome.dom throws on
@@ -443,13 +441,9 @@ async function markSticky(tab, offset) {
           if (shadow) roots.push(shadow);
         }
       }
-      // One can be stuck already at the top of the page: a `bottom: 0` bar whose
-      // place is further down sits pinned to the bottom of the first screen, and
-      // its rect is that spot (KAN-501). A sticky element that isn't stuck sits
-      // where `static` would put it, so each is read that way, all at once, and
-      // put back before anything is painted. Only the ones that stick to the
-      // page, though: one inside a scroller of its own moves with the page,
-      // stuck or not, so its place is where it is painted. The climb goes on
+      // Only the ones that stick to the page are listed: one inside a scroller
+      // of its own moves with the page, stuck or not, so it is always painted
+      // where the page has it and never has to be hidden. The climb goes on
       // through the host of a shadow root: a component in a scrolled box sticks
       // to that box (KAN-507). And an element a component shows through a slot
       // is laid out under the slot, so the climb goes there first: a scroller
@@ -467,26 +461,33 @@ async function markSticky(tab, offset) {
         }
         return true;
       });
-      const was = onPage.map((el) => [el.style.getPropertyValue('position'), el.style.getPropertyPriority('position')]);
-      for (const el of onPage) el.style.setProperty('position', 'static', 'important');
-      window.__shotSticky = list.map((el) => [el, el.getBoundingClientRect().top + y, el.style.visibility]);
-      onPage.forEach((el, k) => el.style.setProperty('position', ...was[k]));
+      window.__shotSticky = onPage.map((el) => [el, el.style.visibility]);
     },
-    args: [offset],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 
-// Within a pixel of its place counts as in it: rects and scroll offsets are
+// Where the page has a sticky element is where `static` puts it: one that
+// isn't stuck sits there, and one that is stuck can be anywhere else, a
+// `bottom: 0` bar whose place is further down pinned to the bottom of the
+// first screen, say (KAN-501). So each is read that way, all at once, and put
+// back before anything is painted. On every slice, not once at the top: a
+// place can move while the capture runs, when content above it loads in
+// (KAN-502). Within a pixel of its place counts as in it: rects are
 // fractional.
-async function hideStuckSticky(tab, offset) {
+async function hideStuckSticky(tab) {
   await scriptWithTimeout({
     target: { tabId: tab.id },
-    func: (y) => {
-      for (const [el, top, v] of window.__shotSticky || []) {
-        el.style.visibility = Math.abs(el.getBoundingClientRect().top + y - top) > 1 ? 'hidden' : v;
-      }
+    func: () => {
+      const list = window.__shotSticky || [];
+      const painted = list.map(([el]) => el.getBoundingClientRect().top);
+      const was = list.map(([el]) => [el.style.getPropertyValue('position'), el.style.getPropertyPriority('position')]);
+      for (const [el] of list) el.style.setProperty('position', 'static', 'important');
+      const place = list.map(([el]) => el.getBoundingClientRect().top);
+      list.forEach(([el, v], k) => {
+        el.style.setProperty('position', ...was[k]);
+        el.style.visibility = Math.abs(painted[k] - place[k]) > 1 ? 'hidden' : v;
+      });
     },
-    args: [offset],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 
@@ -515,7 +516,7 @@ async function setFixedHidden(tab, hide) {
         // Not only after the fixed hide: a sticky element can be hidden on the
         // first slice, and a capture can stop there (KAN-501).
         for (const [el, v] of window.__shotHidden || []) el.style.visibility = v;
-        for (const [el, , v] of window.__shotSticky || []) el.style.visibility = v; // whatever hideStuckSticky left hidden
+        for (const [el, v] of window.__shotSticky || []) el.style.visibility = v; // whatever hideStuckSticky left hidden
         window.__shotHidden = null;
         window.__shotSticky = null;
       }
