@@ -1,4 +1,4 @@
-const DEFAULTS = { format: 'jpg', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true };
+const DEFAULTS = { format: 'jpg', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true, audio: false };
 const $ = (id) => document.getElementById(id);
 const isRecFmt = (f) => f === 'webm' || f === 'mp4' || f === 'gif';
 let activeTab = null;
@@ -33,7 +33,9 @@ function apply(o) {
   if (!edited.has('filename')) $('filename').value = o.filename;
   if (!edited.has('toClipboard')) $('toClipboard').checked = o.toClipboard;
   if (!edited.has('hideScrollbar')) $('hideScrollbar').checked = o.hideScrollbar;
+  if (!edited.has('audio')) $('audio').checked = o.audio;
   toggleQuality();
+  toggleAudio();
   toggleRec();
 }
 
@@ -76,6 +78,7 @@ function read() {
     filename: $('filename').value.trim() || 'shot-{date}-{time}',
     toClipboard: $('toClipboard').checked,
     hideScrollbar: $('hideScrollbar').checked,
+    audio: $('audio').checked,
   };
 }
 
@@ -88,6 +91,8 @@ const save = async () => {
 };
 // Quality slider only applies to the still image formats jpg/webp.
 const toggleQuality = () => { $('qualityRow').style.display = (['jpg', 'webp'].includes($('format').value)) ? 'flex' : 'none'; };
+// Tab audio is recorded into WebM only (KAN-221).
+const toggleAudio = () => { $('audioRow').style.display = $('format').value === 'webm' ? 'flex' : 'none'; };
 
 // Recording captures the whole visible tab, so full-page/region don't apply —
 // disable them and relabel the "Visible" button as "Record" for video formats.
@@ -194,10 +199,10 @@ chrome.storage.local.onChanged.addListener((changes) => {
   toggleRec();
 });
 
-for (const id of ['format', 'quality', 'filename', 'toClipboard', 'hideScrollbar']) {
+for (const id of ['format', 'quality', 'filename', 'toClipboard', 'hideScrollbar', 'audio']) {
   $(id).addEventListener('change', () => {
     if (!ready) edited.add(id);
-    if (id === 'format') { toggleQuality(); toggleRec(); }
+    if (id === 'format') { toggleQuality(); toggleAudio(); toggleRec(); }
     return save();
   });
 }

@@ -76,7 +76,7 @@ test('a shortcut with an image format selected still downloads that format', asy
 });
 
 // Exercise the real command/start/stop paths, substituting only page setup.
-function recordingBrowser(format = 'webm', storedRec = null) {
+function recordingBrowser(format = 'webm', storedRec = null, saved = {}) {
   let onCommand, onMessage, rec = storedRec, hasDoc = !!storedRec;
   const calls = { streams: [], sent: [], badges: [] };
   const chrome = {
@@ -87,7 +87,7 @@ function recordingBrowser(format = 'webm', storedRec = null) {
     },
     commands: { onCommand: { addListener(fn) { onCommand = fn; } } },
     storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: {
-      get: async (key) => key === 'rec' ? { rec } : { opts: { format, filename: 'recording' } },
+      get: async (key) => key === 'rec' ? { rec } : { opts: { format, filename: 'recording', ...saved } },
       set: async (v) => { if ('rec' in v) rec = v.rec; },
       remove: async () => { rec = null; },
     } },
@@ -120,6 +120,17 @@ for (const format of ['webm', 'mp4', 'gif']) {
     assert.strictEqual(b.rec(), null);
     assert.deepStrictEqual(b.calls.streams, [7]);
     assert.strictEqual(b.calls.sent.find(m => m.type === 'rec-stop-offscreen').filename, `recording.${format}`);
+  });
+}
+
+// Alt+Shift+S reads the saved settings rather than the popup's form, so "Record
+// tab audio" reaches the offscreen document through getOpts() (KAN-221). Saved
+// settings from before the option existed fall back to DEFAULTS: no audio.
+for (const [saved, audio] of [[{ audio: true }, true], [{ audio: false }, false], [{}, false]]) {
+  test(`recording shortcut sends audio ${audio} when the saved settings have ${JSON.stringify(saved)}`, async () => {
+    const b = recordingBrowser('webm', null, saved);
+    await b.press();
+    assert.strictEqual(b.calls.sent.find(m => m.type === 'rec-start-offscreen').audio, audio);
   });
 }
 

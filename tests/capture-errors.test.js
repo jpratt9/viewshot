@@ -518,6 +518,12 @@ function loadOffscreen() {
     fail(error) { this.state = 'inactive'; this.onerror?.({ error }); }
   }
   FakeRecorder.isTypeSupported = () => true;
+  const players = []; // what a start with audio plays the tab's sound back out through
+  class FakeAudioContext {
+    constructor() { this.destination = {}; this.closed = false; players.push(this); }
+    createMediaStreamSource(from) { return { connect: (to) => { this.source = { from, to }; } }; }
+    close() { this.closed = true; return Promise.resolve(); }
+  }
 
   const sent = [];
   const asked = []; // what each getUserMedia was asked for: the pinned dims live here
@@ -535,6 +541,7 @@ function loadOffscreen() {
     devicePixelRatio: 2, // a HiDPI display: the fallback's CSS-pixel dims are scaled by it
     crypto: { randomUUID: () => 'doc-1' }, // the id this document answers with
     MediaRecorder: FakeRecorder,
+    AudioContext: FakeAudioContext,
     Blob: class { constructor(parts, { type } = {}) { this.parts = parts; this.size = parts.length; this.type = type; } },
     URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
     document: {
@@ -557,7 +564,7 @@ function loadOffscreen() {
   // download() writes through an <a>, so keep each Blob on its way through.
   vm.runInContext('download = ((real) => (blob, name) => { __downloads.push([blob, name]); real(blob, name); })(download);', Object.assign(context, { __downloads: downloads }));
   return {
-    ctx: context, recorders, downloads, videos, sent, asked, endTrack: () => trackListeners.ended(), tick: (ms) => { now += ms; },
+    ctx: context, recorders, downloads, videos, sent, asked, players, stream, endTrack: () => trackListeners.ended(), tick: (ms) => { now += ms; },
     message: (msg, respond = () => {}) => onMessage(msg, {}, respond),
     runTimers: () => timers.splice(0).forEach((fn) => fn()),
   };
@@ -1181,7 +1188,7 @@ for (const format of ['webp', 'webm']) {
   test(`capture waits for reconciled settings: ${format}`, async () => {
     let release;
     const startupGate = new Promise(r => { release = r; });
-    const opts = { format: 'png', quality: 0.5, filename: 'custom', toClipboard: false, hideScrollbar: false };
+    const opts = { format: 'png', quality: 0.5, filename: 'custom', toClipboard: false, hideScrollbar: false, audio: true };
     const p = loadPopup('https://a.com', { store: { opts }, startupGate });
     p.els.format.value = format;
     const saving = p.els.format.listeners.change[0]();
@@ -2115,4 +2122,68 @@ test('a hanging GIF encode is aborted after 30 seconds', async () => {
   // since a real gif.js web worker would do that when terminated.
   assert.strictEqual(aborted, true, 'the GIF encoder was aborted');
   assert.strictEqual(busy(o), false, 'the document was released after abort');
+});
+
+// --- tab audio (KAN-221) -----------------------------------------------------
+// A WebM recording can take the tab's sound as well. Chrome stops playing a
+// captured tab's sound to the user, so the offscreen document plays it back out
+// for as long as it is captured, and lets go of it when the tracks stop.
+
+const AUDIO_START = { type: 'rec-start-offscreen', streamId: 'sid', format: 'webm', width: 100, height: 100, audio: true };
+
+test('a WebM recording with audio on asks for the tab\'s audio and plays it back out', async () => {
+  const o = loadOffscreen();
+  o.message(AUDIO_START);
+  await settle();
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(o.asked[0].audio ?? null)), { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: 'sid' } }, 'the tab\'s audio was not asked for');
+  assert.strictEqual(o.players.length, 1, 'the tab went quiet while it recorded');
+  assert.strictEqual(o.players[0].source.from, o.stream, 'played back something other than the captured stream');
+  assert.strictEqual(o.players[0].source.to, o.players[0].destination, 'the captured audio goes nowhere');
+});
+
+test('stopping a WebM recording with audio lets go of the tab\'s audio once the file is saved', async () => {
+  const o = loadOffscreen();
+  o.message(AUDIO_START);
+  await settle();
+  const r = o.recorders[0];
+  r.flush({ size: 10 });
+  o.ctx.stopRecording('out.webm');
+  assert.strictEqual(o.players[0].closed, false, 'the sound stopped before the final flush');
+  r.finish();
+  await settle();
+  assert.strictEqual(o.downloads.length, 1, 'the recording was never saved');
+  assert.strictEqual(o.players[0].closed, true, 'the playback was left running');
+});
+
+test('a WebM recording with audio off asks for video only', async () => {
+  const o = loadOffscreen();
+  await o.ctx.startRecording('sid', 'webm', 100, 100);
+  assert.strictEqual(o.asked[0].audio, undefined);
+  assert.strictEqual(o.players.length, 0);
+});
+
+for (const format of ['mp4', 'gif']) {
+  test(`a ${format} recording asks for video only, even with audio on`, async () => {
+    const o = loadOffscreen();
+    o.message({ ...AUDIO_START, format });
+    await settle();
+    assert.strictEqual(o.asked[0].audio, undefined);
+    assert.strictEqual(o.players.length, 0);
+  });
+}
+
+test('a failed WebM recording with audio lets go of the tab\'s audio', async () => {
+  const o = loadOffscreen();
+  o.message(AUDIO_START);
+  await settle();
+  o.recorders[0].fail(new Error('encoder failed'));
+  assert.strictEqual(o.players[0]?.closed, true, 'the playback was left running');
+  assert.deepStrictEqual(o.sent.map((m) => m.type), ['rec-failed']);
+});
+
+test('the worker hands the audio setting to the offscreen document', async () => {
+  const bg = loadBg();
+  const sent = recStart(bg);
+  await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm', audio: true }, TAB.id);
+  assert.strictEqual(sent.find((m) => m.type === 'rec-start-offscreen').audio, true);
 });

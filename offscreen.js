@@ -23,7 +23,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Chrome won't paint the popup until that thread lets its onload finish.
   // Only its own write: shot-clipboard is the popup's (KAN-489).
   if (msg?.type === 'shot-clipboard-offscreen') { copyToClipboard(msg.dataUrl).then(() => sendResponse('done')).catch((e) => sendResponse({ error: e.message || String(e) })); return true; }
-  else if (msg?.type === 'rec-start-offscreen') { log('rec-start-offscreen, format=', msg.format, 'dims=', msg.width, 'x', msg.height, msg.cssPx ? '(css px)' : ''); startRecording(msg.streamId, msg.format, msg.width, msg.height, msg.cssPx).catch(onRecError); }
+  else if (msg?.type === 'rec-start-offscreen') { log('rec-start-offscreen, format=', msg.format, 'dims=', msg.width, 'x', msg.height, msg.cssPx ? '(css px)' : '', 'audio=', !!msg.audio); startRecording(msg.streamId, msg.format, msg.width, msg.height, msg.cssPx, msg.audio).catch(onRecError); }
   else if (msg?.type === 'rec-stop-offscreen') { log('rec-stop-offscreen, filename=', msg.filename); stopRecording(msg.filename); }
 });
 
@@ -41,11 +41,11 @@ const GIF_MAX_FRAMES = 600; // ~60s cap so addFrame copies don't exhaust memory
 // document for good, so the wait gives up after the same 2 s the worker allows
 // its own page calls (SCRIPT_TIMEOUT_MS).
 const VIDEO_TIMEOUT_MS = 2000;
-let rec = null; // { stream, format, recorder?, chunks?, gif?, timer?, frames? }
+let rec = null; // { stream, format, playback?, recorder?, chunks?, gif?, timer?, frames? }
 let saving = 0; // recordings stopped but not saved yet (see stopRecording)
 let lastStart = null; // { stopped }, so a Stop can reach a start still waiting on getUserMedia
 
-async function startRecording(streamId, format, width, height, cssPx) {
+async function startRecording(streamId, format, width, height, cssPx, audio) {
   // One recording at a time: replacing `rec` would leave the one already
   // running with nothing that can stop or save it.
   if (rec) { console.warn('[ViewShot] a recording is already running; not starting another'); return; }
@@ -68,11 +68,15 @@ async function startRecording(streamId, format, width, height, cssPx) {
     Object.assign(mandatory, { minWidth: width, maxWidth: width, minHeight: height, maxHeight: height });
   }
   log('requesting getUserMedia for streamId', streamId, 'mandatory=', mandatory);
+  const constraints = { video: { mandatory } };
+  // The tab's sound as well, when "Record tab audio" is on: WebM only (KAN-221).
+  // It is redeemed from the same stream id, in the same legacy form.
+  if (audio && format === 'webm') constraints.audio = { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } };
   const start = { stopped: false };
   lastStart = start;
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { mandatory } });
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (e) {
     // A start stopped while getUserMedia was answering has nothing to report:
     // rec-failed would flash ! right after the user's own Stop.
@@ -86,6 +90,12 @@ async function startRecording(streamId, format, width, height, cssPx) {
   // a recorder started now would run on with nothing that can stop it.
   if (start.stopped) { stream.getTracks().forEach((t) => t.stop()); console.warn('[ViewShot] stopped before the recorder started; not starting it'); return; }
   rec = { stream, format };
+  // Chrome stops playing a tab's sound to the user once it is captured. Play
+  // it back out from here for as long as it is.
+  if (constraints.audio) {
+    rec.playback = new AudioContext();
+    rec.playback.createMediaStreamSource(stream).connect(rec.playback.destination);
+  }
   // Chrome's own "Stop sharing" bar (and closing the captured tab) ends the
   // track without telling us. Route it through the normal stop path so the
   // file is still written, the badge clears, and nothing keeps ticking.
@@ -227,10 +237,11 @@ function stopRecording(filename) {
     // `chunks` + `recorder` into locals so the closure doesn't deref a
     // nulled `rec`, and (b) keep the stream alive until that final flush
     // completes — track-stopping waits for `stop` too.
-    const { recorder, chunks, stopped, startedAt } = rec;
+    const { recorder, chunks, stopped, startedAt, playback } = rec;
     stopped.then(async (stoppedAt) => {
       download(format === 'webm' ? await withDuration(chunks, stoppedAt - startedAt) : new Blob(chunks, { type: `video/${format}` }), filename);
       stream.getTracks().forEach((t) => t.stop());
+      playback?.close(); // the tab plays its own sound again once its tracks stop
     });
     // Already inactive if the track ended first: there is nothing left to stop.
     if (recorder.state !== 'inactive') recorder.stop();
@@ -318,6 +329,7 @@ function teardown() {
   if (!rec) return;
   if (rec.timer) clearInterval(rec.timer);
   try { rec.stream.getTracks().forEach((t) => t.stop()); } catch {}
+  rec.playback?.close();
   rec = null;
 }
 

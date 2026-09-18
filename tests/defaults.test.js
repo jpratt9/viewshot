@@ -171,6 +171,17 @@ test('the quality row stays hidden for png', async () => {
   assert.strictEqual(popup.els.qualityRow.style.display, 'none');
 });
 
+test('the audio row shows only for WebM, and follows the format', async () => {
+  for (const [format, display] of [['webm', 'flex'], ['mp4', 'none'], ['gif', 'none'], ['jpg', 'none']]) {
+    const popup = await loadPopup({ opts: { format } });
+    assert.strictEqual(popup.els.audioRow.style.display, display, format);
+  }
+  const popup = await loadPopup({ opts: { format: 'png' } });
+  popup.els.format.value = 'webm';
+  await popup.els.format.listeners.change[0]();
+  assert.strictEqual(popup.els.audioRow.style.display, 'flex', 'choosing WebM did not show the audio row');
+});
+
 // --- first paint must not wait on any async round trip ----------------------
 // Chrome does not show the popup until its onload completes, so anything the
 // UI awaits before painting is lag the user sees on every single click.
@@ -253,7 +264,7 @@ for (const edits of [
   { filename: 'both-edited', quality: '0.83' },
 ]) {
   test(`unfinished startup edits survive reconciliation: ${JSON.stringify(edits)}`, async () => {
-    const stored = { format: 'webp', quality: 0.5, filename: 'stored-name', toClipboard: true, hideScrollbar: false };
+    const stored = { format: 'webp', quality: 0.5, filename: 'stored-name', toClipboard: true, hideScrollbar: false, audio: true };
     const popup = bootPopup({ opts: { ...stored } });
     const cacheBefore = popup.mirror.value;
     for (const [id, value] of Object.entries(edits)) {
@@ -269,6 +280,7 @@ for (const edits of [
     assert.strictEqual(popup.els.format.value, stored.format);
     assert.strictEqual(popup.els.toClipboard.checked, stored.toClipboard);
     assert.strictEqual(popup.els.hideScrollbar.checked, stored.hideScrollbar);
+    assert.strictEqual(popup.els.audio.checked, stored.audio);
     assert.deepStrictEqual(popup.store.opts, stored, 'reconciliation must not save unfinished edits');
     assert.strictEqual(popup.mirror.value, cacheBefore);
     await popup.els[Object.keys(edits)[0]].listeners.change[0]();
@@ -288,9 +300,9 @@ function deferred() {
 
 for (const delayed of ['tabs', 'storage']) {
   for (const cache of [null, { format: 'gif', quality: 0.8, filename: 'stale', toClipboard: false, hideScrollbar: true }]) {
-    for (const [id, value] of Object.entries({ format: 'webp', quality: '0.92', filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true })) {
+    for (const [id, value] of Object.entries({ format: 'webp', quality: '0.92', filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true, audio: true })) {
       test(`startup preserves untouched settings: ${delayed}, cache=${!!cache}, edit=${id}`, async () => {
-        const stored = { format: 'png', quality: 0.5, filename: '{title}-custom', toClipboard: true, hideScrollbar: false };
+        const stored = { format: 'png', quality: 0.5, filename: '{title}-custom', toClipboard: true, hideScrollbar: false, audio: false };
         const gate = deferred();
         const popup = bootPopup({ opts: { ...stored } }, cache, { [delayed]: gate.promise });
         const mirrorBefore = popup.mirror.value;

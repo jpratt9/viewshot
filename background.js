@@ -1,4 +1,4 @@
-const DEFAULTS = { format: 'jpg', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true };
+const DEFAULTS = { format: 'jpg', quality: 0.92, filename: 'shot-{date}-{time}', toClipboard: false, hideScrollbar: true, audio: false };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The `capture` branch answers synchronously, before it starts any work. The
@@ -904,7 +904,7 @@ async function startRecording(streamId, opts, tabId) {
   // recorder started after that would run on with nothing that can stop it.
   if (!(await getRec())) { console.warn('[ViewShot] stopped before the recorder started; not starting it'); return; }
   await chrome.runtime.sendMessage({
-    type: 'rec-start-offscreen', streamId, format: opts.format,
+    type: 'rec-start-offscreen', streamId, format: opts.format, audio: opts.audio,
     width: dims?.width, height: dims?.height, cssPx: dims?.cssPx,
   });
   log('rec-start-offscreen sent, dims=', dims);
