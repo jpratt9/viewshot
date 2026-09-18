@@ -1698,3 +1698,36 @@ test('gives up putting the rule back if the page fights it without end', async (
   assert.strictEqual(put.length, 11, 'fought the page without end');
   assert.strictEqual(styles.size, 0, 'left the rule in the page');
 });
+
+test("turns scroll snapping off over a page's own !important in a style attribute set while it is being shot", async () => {
+  const snaps = [0, 500, 1000, 1500, 2000, 2287];
+  const body = el(3000, 713);
+  const htmlEl = positioned('static');
+  
+  const scroll = body.scrollTo;
+  let added = false;
+  body.scrollTo = function (o) {
+    // Page adds inline snapping on the first scroll down
+    if (o.top > 0 && !added) {
+      added = true;
+      htmlEl.style.setProperty('scroll-snap-type', 'y mandatory', 'important');
+      for (const obs of page.observers) {
+        if (obs.on === page.ctx.document.documentElement) {
+          obs.cb([{ type: 'attributes', attributeName: 'style', target: htmlEl }]);
+        }
+      }
+    }
+    
+    const off = inlineSnap(htmlEl)[0] === 'none';
+    const top = off ? o.top : snaps.reduce((a, b) => (Math.abs(b - o.top) < Math.abs(a - o.top) ? b : a));
+    scroll.call(this, { ...o, top });
+  };
+  
+  const page = load({ de: el(713, 713), body, ih: 713, dpr: 1, snapOn: [htmlEl] });
+  await page.ctx.captureFullPage(TAB);
+  
+  assert.deepStrictEqual(page.captureAt, [0, 713, 1426, 2139, 2287], 'shot the slices where the snap points pulled them');
+  assert.deepStrictEqual(page.canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
+  assert.strictEqual(page.canvases[page.canvases.length - 1].height, 3000, 'cut the image short');
+  assert.deepStrictEqual(inlineSnap(htmlEl), ['y mandatory', 'important'], "did not put the page's own inline snapping back");
+});

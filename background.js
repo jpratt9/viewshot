@@ -357,27 +357,37 @@ function measurePage() {
   // would put the rule back once this capture's cleanup took it out.
   window.__vsAnchorObserver?.disconnect();
   let __vsAnchorMoves = 0;
-  window.__vsAnchorObserver = new MutationObserver(() => {
+  window.__vsAnchored = window.__vsAnchored || [];
+
+  const overrideStyle = (node) => {
+    for (const [name, own] of [['overflow-anchor', 'auto'], ['scroll-snap-type', 'none']]) {
+      const value = node.style.getPropertyValue(name);
+      if (value === own || node.style.getPropertyPriority(name) !== 'important') continue;
+      window.__vsAnchored.push([node, value, name]);
+      node.style.setProperty(name, own, 'important');
+    }
+  };
+
+  window.__vsAnchorObserver = new MutationObserver((records) => {
     if (root.firstChild !== style) {
       if (++__vsAnchorMoves > 10) window.__vsAnchorObserver.disconnect();
       else root.prepend(style);
     }
+    for (const r of records) {
+      if (r.type === 'attributes' && r.attributeName === 'style' && r.target.style) {
+        overrideStyle(r.target);
+      }
+    }
   });
-  window.__vsAnchorObserver.observe(root, { childList: true });
+  window.__vsAnchorObserver.observe(root, { childList: true, attributes: true, attributeFilter: ['style'], subtree: true });
   // A page's own `!important` in a style attribute outranks every style sheet
   // rule, so each element with one gets the capture's own inline
   // `auto !important`, and the cleanup scroll puts the page's back (KAN-583).
   // Snapping gets the same, with `none !important` (KAN-606).
   // A list a capture that died left behind is kept, so those get theirs back.
   // One left before KAN-606 doesn't name the property: it only held anchoring.
-  window.__vsAnchored = window.__vsAnchored || [];
-  for (const [name, own] of [['overflow-anchor', 'auto'], ['scroll-snap-type', 'none']]) {
-    for (const node of document.querySelectorAll(`[style*="${name}" i]`)) {
-      const value = node.style.getPropertyValue(name);
-      if (value === own || node.style.getPropertyPriority(name) !== 'important') continue;
-      window.__vsAnchored.push([node, value, name]);
-      node.style.setProperty(name, own, 'important');
-    }
+  for (const name of ['overflow-anchor', 'scroll-snap-type']) {
+    for (const node of document.querySelectorAll(`[style*="${name}" i]`)) overrideStyle(node);
   }
   const de = document.documentElement, b = document.body;
   let el = de.scrollHeight > de.clientHeight + 1 ? de
