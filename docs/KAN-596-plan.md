@@ -226,11 +226,20 @@ Two files change: `background.js` and `tests/fullpage.test.js`. Both diffs were 
 
 **Runs that saved no file:** none.
 
-## Open questions
+## Open questions — settled
 
-1. **What to do with a page that scrolls itself again before the put-back's shot.** A page that does this within a frame or two of being put back, such as `settlescroll-now` or one that snaps in its own scroll event, is still shot where it scrolled to and drawn where the scroll left it. That is the ticket's symptom, on a faster page.
-   - The only change that would help that page is to draw the slice where it was shot.
-     - The rows between would then be blank, instead of missing with the rows past them drawn twice.
-     - KAN-592's plan turned that down for the case this ticket's pages are in.
-   - This plan leaves that page as it is today, and pins it in the new test.
-   - Should the plan also draw that slice where it was shot?
+The plan left one question open. It is settled here, and it doesn't change the code shipped in `54b6fd9`.
+
+1. **Should a slice be drawn where it was shot when the page scrolls itself again before the put-back's shot?** Not as part of KAN-596.
+   - **What the ticket covers:** a page that scrolls itself again after it is put back. Its page, `settlescroll-again`, does that 200 ms after each time it lands on 713. `54b6fd9` lines that page up; see the Chrome runs above.
+   - **Why this case is different:** the page scrolls itself again within a frame or two of being put back, before the frame check the shot waits for. So the slice is shot where the page scrolled to.
+     - `settlescroll-now` shows this. It scrolls itself in its own scroll event each time it lands on 713.
+     - `98773a9` and `54b6fd9` save the same PNG for it, with red at 1100 and green at 1300 and at 1500.
+     - The new test pins it.
+   - **Why the slice isn't drawn where it was shot:** the rows between the two offsets would then be blank, rather than left out with the rows past them drawn twice. The KAN-592 plan turned that down for the same reason: "Drawn where it was shot, the slice would leave a gap." This plan keeps to that.
+   - **Follow-up:** KAN-598, filed from this question.
+
+**Other follow-up:**
+- **KAN-599**, filed from the choice above about what the shot no longer waits for. Content that fades in when the put-back brings its rows back on screen is shot part-way.
+
+**This ticket blocks both.**
