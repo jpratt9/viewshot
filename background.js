@@ -380,6 +380,10 @@ async function captureFullPage(tab, format) {
       // included: a `bottom` one can be stuck there already (KAN-501).
       if (hid) await hideStuckSticky(tab);
       await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
+      // And the fixed ones the page put in, or pinned, while it settled: the
+      // hide above ran before they were there (KAN-522). It goes before the
+      // frame check, so the frame the shot waits for has this hide in it.
+      if (i > 0) await setFixedHidden(tab, true);
       // captureVisibleTab hands back the last frame the window presented. A
       // window that isn't drawing - minimized, occluded - presents none, so
       // every slice comes back as the frame before it. The offsets still
