@@ -258,11 +258,12 @@ test('recording a page that refuses scripts logs a warning, not an error', async
 
 // --- the popup says which page it was --------------------------------------
 
-function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, startupGate, startupFails = false, reply = true } = {}) {
+function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, startupGate, startupFails = false, reply = true, scriptError } = {}) {
   const els = {};
   const sent = [];
   const writes = [];
   const streams = [];
+  const scripts = []; // the tab each script the popup tried was for
   let onStored; // popup.js's chrome.storage.local.onChanged listener
   let onMessage; // popup.js's chrome.runtime.onMessage listener: the worker's clipboard write
   const makeEl = () => {
@@ -304,6 +305,9 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
       runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, sendMessage: async (m) => { if (m.type !== 'rec-check') sent.push(m); if (reply instanceof Error) throw reply; return reply; } },
       tabCapture: { getMediaStreamId: async () => { streams.push('requested'); if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
+      // A script on the page: Chrome refuses one with `scriptError`, as its
+      // error page does (KAN-546).
+      scripting: { executeScript: async (o) => { scripts.push(o.target.tabId); if (scriptError) throw new Error(scriptError); return [{}]; } },
     },
     localStorage: { getItem: () => null, setItem: () => {} },
     crypto: { randomUUID: () => 'popup-1' }, // the id this popup's captures carry (KAN-552)
@@ -312,7 +316,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
   vm.runInContext(read('popup.js'), context);
   const btn = (mode) => modes.find((b) => b.dataset.mode === mode);
   return {
-    ctx: context, els, sent, btn, writes, streams,
+    ctx: context, els, sent, btn, writes, streams, scripts,
     ready: settle, // let load() resolve so activeTab is populated
     click: (mode) => btn(mode).listeners.click[0](),
     stop: () => els.stopBtn.listeners.click[0](),
@@ -2329,4 +2333,56 @@ test('the popup shows no other capture\'s screens while its own waits its turn',
   answer(true);
   await done;
   assert.strictEqual(p.els.status.textContent, 'Saved.');
+});
+
+// --- Chrome's error page (KAN-546) ------------------------------------------
+// A page that fails to load shows Chrome's error page, but the tab keeps the
+// URL that failed, so the popup's URL checks let Full page and Region through.
+// Chrome refuses page scripts there: Full page showed Chrome's own "Frame with
+// ID 0 is showing error page", and Region closed the popup and only flashed
+// the badge.
+
+const ERROR_PAGE = 'Frame with ID 0 is showing error page';
+
+test('refuses Full page and Region on Chrome\'s error page with a message', async () => {
+  for (const mode of ['fullpage', 'region']) {
+    const p = loadPopup('http://127.0.0.1:9/', { scriptError: ERROR_PAGE });
+    await p.ready();
+    await p.click(mode);
+    assert.deepStrictEqual(p.scripts, [1], `${mode} didn't try a script on the popup's tab`);
+    assert.deepStrictEqual(p.sent, [], `${mode} was sent to the worker`);
+    assert.strictEqual(p.els.err.hidden, false);
+    assert.match(p.els.err.textContent, /Full page or Region on a page that failed to load\. Visible still works/);
+    assert.strictEqual(p.els.status.hidden, true, 'still said it was capturing');
+    assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false], 'left greyed out for a capture that was never sent');
+  }
+});
+
+test('still takes Visible on Chrome\'s error page, without trying a script', async () => {
+  const p = loadPopup('http://127.0.0.1:9/', { scriptError: ERROR_PAGE });
+  await p.ready();
+  await p.click('visible');
+  assert.deepStrictEqual(p.scripts, []);
+  assert.deepStrictEqual(p.sent.map((m) => m.type), ['capture'], 'Visible on the error page was wrongly blocked');
+});
+
+test('leaves Full page and Region to the worker when the script runs, or is refused for another reason', async () => {
+  for (const scriptError of [undefined, 'Cannot access contents of the page. Extension manifest must request permission to access the respective host.']) {
+    for (const mode of ['fullpage', 'region']) {
+      const p = loadPopup('https://a.com/x', { scriptError });
+      await p.ready();
+      await p.click(mode);
+      assert.deepStrictEqual(p.sent.map((m) => [m.type, m.mode]), [['capture', mode]], `${mode} was wrongly blocked (${scriptError || 'the script ran'})`);
+      assert.ok(!p.els.err || p.els.err.hidden, `${mode} showed an error of its own`);
+    }
+  }
+});
+
+test('tries the script without waiting for the page to finish loading', async () => {
+  const p = loadPopup('https://a.com/x');
+  const tried = [];
+  p.ctx.chrome.scripting.executeScript = async (o) => { tried.push(o.injectImmediately); return [{}]; };
+  await p.ready();
+  await p.click('region');
+  assert.deepStrictEqual(tried, [true], 'a page still loading would hold the popup up');
 });

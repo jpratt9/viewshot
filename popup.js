@@ -177,6 +177,24 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
       // a second press would run a second capture over this one.
       const shot = btn.dataset.mode !== 'region';
       if (shot) { capturing = true; toggleRec(); showStatus('Capturing…'); }
+      // Chrome's error page keeps the URL that failed to load, so the checks
+      // above let it through, but Chrome refuses page scripts there, which
+      // Full page and Region need. They failed in the worker instead: Full
+      // page with Chrome's own "Frame with ID 0 is showing error page", and
+      // Region with only the badge, once the popup had closed (KAN-546). Only
+      // a script can tell, and Chrome refuses one there at once. A script
+      // refused for any other reason is left to the worker, as before.
+      if (btn.dataset.mode !== 'visible') {
+        try {
+          await chrome.scripting.executeScript({ target: { tabId: activeTab.id }, func: () => {}, injectImmediately: true });
+        } catch (e) {
+          if (/showing error page/.test(e.message)) {
+            if (shot) { capturing = false; toggleRec(); }
+            showError('Chrome doesn’t let extensions run Full page or Region on a page that failed to load. Visible still works here.');
+            return; // keep the popup open so the error is visible
+          }
+        }
+      }
       await save();
       // Wait for the worker to acknowledge before closing anything. window.close()
       // in the same turn as the send tears this frame down while a cold-starting
