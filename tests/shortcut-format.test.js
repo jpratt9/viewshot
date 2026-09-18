@@ -28,7 +28,7 @@ async function pressShortcut(command, format) {
     async convertToBlob({ type }) { return { type, arrayBuffer: async () => new Uint8Array([1]).buffer }; }
   }
   const chrome = {
-    runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
+    runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, sendMessage: async () => {} },
     commands: { onCommand: { addListener: (fn) => { onCommand = fn; } } },
     tabs: {
       query: async () => [{ id: 7, windowId: 1, url: 'https://a.com', title: 'T' }],

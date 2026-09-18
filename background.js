@@ -17,6 +17,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     runCapture(msg.mode, msg.opts, msg.tabId, msg.popupId).then(() => sendResponse(true), (e) => { captureFailed(e); sendResponse({ error: e.message || String(e) }); });
     return true;
   }
+  // A popup asks as it opens. A capture it didn't send - from a popup closed
+  // since, or a shortcut - is shown there too, with its buttons greyed out
+  // until that capture has ended (KAN-545).
+  else if (msg?.type === 'capture-check') sendResponse(shooting);
   else if (msg?.type === 'rec-start') {
     if (commandStartPending) { sendResponse(false); return; }
     recStartPending++;
@@ -255,8 +259,16 @@ function captureFailed(e) {
 // deadline (CAPTURE_SCRIPT_TIMEOUT_MS, CAPTURE_TIMEOUT_MS), so a page or a
 // shot that never answers can't hold the others up for good.
 let runGate = Promise.resolve();
+// Whether a Visible or Full page is taking its turn, for a popup that opens
+// during it (KAN-545). Only the popup that sent a capture hears how it went,
+// in its answer, so the end of each one also goes out to every popup, for one
+// opened since. Nothing may be listening, as with its progress. A Region is
+// neither: its runCapture ends with the overlay up, and its shot waits for the
+// drag.
+let shooting = false;
 function runCapture(mode, opts, tabId, popupId) {
   const run = runGate.then(async () => {
+    if (mode !== 'region') shooting = true;
     const tab = await getActiveTab(tabId);
     if (!tab) throw new Error('No tab to capture'); // flash the badge rather than do nothing
     await cancelRegion(tab); // an abandoned overlay would otherwise dim this shot
@@ -279,6 +291,10 @@ function runCapture(mode, opts, tabId, popupId) {
     if (!png) return;
     await saveCapture(png, opts, tab);
   });
+  if (mode !== 'region') {
+    const done = (error) => { shooting = false; chrome.runtime.sendMessage({ type: 'capture-done', toClipboard: opts.toClipboard, error }).catch(() => {}); };
+    run.then(() => done(), (e) => done(e.message || String(e)));
+  }
   runGate = run.catch(() => {}); // one capture's failure must not stall the next
   return run;
 }

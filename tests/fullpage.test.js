@@ -1078,5 +1078,5 @@ test('names the popup that asked for the full page in its progress, and none for
   ctx.runCapture('fullpage', RUN_OPTS, TAB.id); // as a shortcut starts it
   message({ type: 'capture', mode: 'fullpage', opts: RUN_OPTS, tabId: TAB.id, popupId: 'popup-1' }); // waits its turn behind it
   await vm.runInContext('runGate', ctx); // both have finished
-  assert.deepStrictEqual(sent.map((m) => m.popupId), [undefined, undefined, undefined, undefined, 'popup-1', 'popup-1', 'popup-1', 'popup-1']);
+  assert.deepStrictEqual(sent.filter((m) => m.type === 'capture-progress').map((m) => m.popupId), [undefined, undefined, undefined, undefined, 'popup-1', 'popup-1', 'popup-1', 'popup-1']);
 });

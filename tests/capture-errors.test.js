@@ -258,7 +258,7 @@ test('recording a page that refuses scripts logs a warning, not an error', async
 
 // --- the popup says which page it was --------------------------------------
 
-function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, startupGate, startupFails = false, reply = true, scriptError } = {}) {
+function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, startupGate, startupFails = false, reply = true, scriptError, running = false } = {}) {
   const els = {};
   const sent = [];
   const writes = [];
@@ -301,8 +301,9 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
         },
       },
       // the worker's answer. The popup's startup rec-check is the worker's
-      // business, not this file's, so it is left out of `sent`.
-      runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, sendMessage: async (m) => { if (m.type !== 'rec-check') sent.push(m); if (reply instanceof Error) throw reply; return reply; } },
+      // business, not this file's, so it is left out of `sent`. So is its
+      // capture-check, which the worker answers with `running` (KAN-545).
+      runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, sendMessage: async (m) => { if (m.type === 'capture-check') return running; if (m.type !== 'rec-check') sent.push(m); if (reply instanceof Error) throw reply; return reply; } },
       tabCapture: { getMediaStreamId: async () => { streams.push('requested'); if (streamIdFails) throw new Error('stream id refused'); return 'sid'; } },
       extension: { isAllowedFileSchemeAccess: async () => fileAccess }, // "Allow access to file URLs"
       // A script on the page: Chrome refuses one with `scriptError`, as its
@@ -2385,4 +2386,122 @@ test('tries the script without waiting for the page to finish loading', async ()
   await p.ready();
   await p.click('region');
   assert.deepStrictEqual(tried, [true], 'a page still loading would hold the popup up');
+});
+
+// --- a popup opened while a capture runs (KAN-545) --------------------------
+// Only the popup that sent a Visible or Full page heard how it went. A popup
+// opened during one - after the popup that sent it was closed, or during a
+// shortcut's - showed nothing of it and left its buttons live.
+
+// The worker's answer to the capture-check a popup sends as it opens.
+const checkCapture = (bg) => { let answer; bg.message({ type: 'capture-check' }, (a) => { answer = a; }); return answer; };
+
+test('tells a popup that opens whether a Visible or Full page is running', async () => {
+  const bg = loadBg({ captureHangs: () => true }); // the shot waits for its deadline
+  assert.strictEqual(checkCapture(bg), false, 'nothing is running yet');
+  const run = bg.ctx.runCapture('visible', OPTS, TAB.id); // as a shortcut starts it
+  await settle();
+  assert.strictEqual(checkCapture(bg), true, 'a popup opened now would leave its buttons live');
+  bg.expire();
+  await assert.rejects(run, /did not answer/);
+  assert.strictEqual(checkCapture(bg), false, 'still running once it had ended');
+});
+
+test('tells every popup how a Visible or Full page ended', async () => {
+  const bg = loadBg({ captureFails: (n) => n === 3 && 'Tabs cannot be edited right now' });
+  const sent = [];
+  // An open popup answers the worker's clipboard write.
+  bg.ctx.chrome.runtime.sendMessage = async (m) => { sent.push(JSON.parse(JSON.stringify(m))); return m.type === 'shot-clipboard' ? 'done' : undefined; }; // copy out of the vm realm
+  await bg.ctx.runCapture('visible', OPTS, TAB.id);
+  await bg.ctx.runCapture('visible', { ...OPTS, toClipboard: true }, TAB.id);
+  await assert.rejects(bg.ctx.runCapture('visible', OPTS, TAB.id));
+  assert.deepStrictEqual(sent.filter((m) => m.type === 'capture-done'), [
+    { type: 'capture-done', toClipboard: false },
+    { type: 'capture-done', toClipboard: true },
+    { type: 'capture-done', toClipboard: false, error: 'Tabs cannot be edited right now' },
+  ]);
+});
+
+test('says nothing of a Region, whose shot waits for the drag', async () => {
+  const bg = loadBg();
+  const sent = [];
+  bg.ctx.chrome.runtime.sendMessage = async (m) => { sent.push(m.type); };
+  await bg.ctx.runCapture('region', OPTS, TAB.id); // its overlay is up
+  assert.strictEqual(checkCapture(bg), false, 'a popup opened now would wait on a shot that comes only after the drag');
+  assert.deepStrictEqual(sent, [], 'said the Region had ended before its shot was taken');
+});
+
+test('a popup opened during a capture it didn\'t send shows it, with its buttons greyed out', async () => {
+  for (const popupId of ['popup-0', undefined]) { // from a popup closed since, and from a shortcut
+    const p = loadPopup('https://a.com/x', { running: true });
+    await p.ready();
+    assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [true, true, true], 'a press would start another capture');
+    assert.strictEqual(p.els.status.textContent, 'Capturing…');
+    p.message({ type: 'capture-progress', popupId, screen: 3, screens: 12 });
+    assert.strictEqual(p.els.status.textContent, 'Capturing screen 3 of 12…');
+    p.message({ type: 'capture-done', toClipboard: false });
+    assert.strictEqual(p.els.status.textContent, 'Saved.');
+    assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
+  }
+});
+
+test('a popup opened during a capture says it was copied, or shows its error', async () => {
+  const p = loadPopup('https://a.com/x', { running: true });
+  await p.ready();
+  p.message({ type: 'capture-done', toClipboard: true });
+  assert.strictEqual(p.els.status.textContent, 'Copied to the clipboard.');
+  const q = loadPopup('https://a.com/x', { running: true });
+  await q.ready();
+  q.message({ type: 'capture-done', toClipboard: false, error: 'Full page stopped: another tab is now showing' });
+  assert.strictEqual(q.els.err.hidden, false);
+  assert.strictEqual(q.els.err.textContent, 'Full page stopped: another tab is now showing');
+  assert.strictEqual(q.els.status.hidden, true, 'still said it was capturing');
+  assert.deepStrictEqual(MODES.map((m) => q.btn(m).disabled), [false, false, false]);
+});
+
+test('a popup whose own capture waits its turn shows no other capture\'s end', async () => {
+  let answer;
+  const p = loadPopup('https://a.com/x', { reply: new Promise((r) => { answer = r; }) });
+  await p.ready();
+  const done = p.click('fullpage');
+  await settle();
+  p.message({ type: 'capture-done', toClipboard: false, error: 'Tabs cannot be edited right now' }); // the shortcut's capture this one waits behind
+  assert.strictEqual(p.els.status.textContent, 'Capturing…', 'showed another capture\'s end as its own');
+  assert.strictEqual(p.els.err.hidden, true, 'showed another capture\'s error as its own');
+  answer(true);
+  await done;
+  assert.strictEqual(p.els.status.textContent, 'Saved.');
+});
+
+test('a press before the popup hears what is running goes by its own capture', async () => {
+  let check, answer;
+  const p = loadPopup('https://a.com/x', { running: new Promise((r) => { check = r; }), reply: new Promise((r) => { answer = r; }) });
+  await p.ready();
+  const done = p.click('visible');
+  await settle();
+  check(true); // a shortcut's capture was running, and this popup's waits behind it
+  await settle();
+  p.message({ type: 'capture-done', toClipboard: false }); // that capture's end
+  assert.strictEqual(p.els.status.textContent, 'Capturing…', 'showed another capture\'s end as its own');
+  answer(true);
+  await done;
+  assert.strictEqual(p.els.status.textContent, 'Saved.');
+});
+
+test('drops a capture\'s end quietly when no popup is open to hear it', async () => {
+  const bg = loadBg();
+  // A shortcut's capture, with no popup open: Chrome rejects the send.
+  bg.ctx.chrome.runtime.sendMessage = async () => { throw new Error('Could not establish connection. Receiving end does not exist.'); };
+  await bg.ctx.runCapture('visible', OPTS, TAB.id);
+  await settle();
+  assert.strictEqual(bg.shots.length, 1);
+  assert.strictEqual(checkCapture(bg), false, 'still running once it had ended');
+});
+
+test('a popup that can\'t ask the worker what is running is left as it was', async () => {
+  const p = loadPopup('https://a.com/x', { running: Promise.reject(new Error('Could not establish connection. Receiving end does not exist.')) });
+  await p.ready();
+  await settle();
+  assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
+  assert.ok(!p.els.status || p.els.status.hidden, 'said a capture was running');
 });

@@ -6,6 +6,7 @@ let recChanged = false; // the storage listener at the bottom has seen `rec` cha
 const edited = new Set(); // input can precede change while startup is pending
 let ready = false;
 let capturing = false; // a Visible or Full page this popup sent hasn't been answered yet (KAN-220)
+let watching = false; // one it didn't send was running as it opened, and hasn't ended (KAN-545)
 const popupId = crypto.randomUUID(); // sent with this popup's captures; a Full page's progress carries it back (KAN-552)
 
 // One box at a time: an error, or how the capture is going.
@@ -102,14 +103,15 @@ const toggleAudio = () => { $('audioRow').style.display = ['webm', 'mp4'].includ
 // disable them and relabel the "Visible" button as "Record" for video formats.
 // Record is greyed out too while a recording runs (Stop enabled): a second
 // start would record over that one, and it would be lost. All three are
-// greyed out while a capture this popup sent is running (KAN-220).
+// greyed out while a capture this popup sent is running (KAN-220), and while
+// one it found running as it opened is (KAN-545).
 function toggleRec() {
   const rec = isRecFmt($('format').value);
   const vis = document.querySelector('.mode[data-mode="visible"]');
   vis.querySelector('.lbl').textContent = rec ? 'Record' : 'Visible';
   vis.querySelector('.ico').textContent = rec ? '●' : '▢';
-  vis.disabled = !ready || capturing || rec && !$('stopBtn').disabled;
-  document.querySelectorAll('.mode[data-mode="fullpage"], .mode[data-mode="region"]').forEach((b) => { b.disabled = !ready || capturing || rec; });
+  vis.disabled = !ready || capturing || watching || rec && !$('stopBtn').disabled;
+  document.querySelectorAll('.mode[data-mode="fullpage"], .mode[data-mode="region"]').forEach((b) => { b.disabled = !ready || capturing || watching || rec; });
 }
 
 document.querySelectorAll('#modes .mode').forEach((btn) => {
@@ -251,6 +253,11 @@ paintFromCache(); // synchronous: correct UI in the first frame
 // storage listener above enables Record and greys out Stop. Nothing else here
 // wakes the worker: this popup reads storage without it.
 chrome.runtime.sendMessage({ type: 'rec-check' }).catch(() => { /* a worker that can't answer has no recording in it either */ });
+// A Visible or Full page this popup didn't send may be running: the popup that
+// sent it was closed, or a shortcut started it. This popup shows it too, and
+// keeps its buttons greyed out until it ends (KAN-545). A press that got in
+// before the answer has a capture of its own to show.
+chrome.runtime.sendMessage({ type: 'capture-check' }).then((running) => { if (running && !capturing) { watching = true; toggleRec(); showStatus('Capturing…'); } }).catch(() => { /* a worker that can't answer has no capture running in it either */ });
 const startup = load().catch(() => {
   showError('Couldn’t load settings. Close and reopen ViewShot to try again.');
 });
@@ -258,8 +265,13 @@ const startup = load().catch(() => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // How far a Full page has got (KAN-220). Only this popup's own capture's: the
   // worker sends it for a shortcut's capture too, and for one this popup's is
-  // waiting behind (KAN-552).
-  if (msg?.type === 'capture-progress') { if (capturing && msg.popupId === popupId) showStatus(`Capturing screen ${msg.screen} of ${msg.screens}…`); return; }
+  // waiting behind (KAN-552). A popup that found a capture running as it
+  // opened shows that one's, the only capture running (KAN-545).
+  if (msg?.type === 'capture-progress') { if (capturing ? msg.popupId === popupId : watching) showStatus(`Capturing screen ${msg.screen} of ${msg.screens}…`); return; }
+  // How the capture this popup found running as it opened ended (KAN-545). A
+  // capture this popup sent is answered instead, and one that ends while this
+  // popup's waits its turn isn't its own.
+  if (msg?.type === 'capture-done') { if (watching) { watching = false; toggleRec(); if (msg.error) showError(msg.error); else showStatus(msg.toClipboard ? 'Copied to the clipboard.' : 'Saved.'); } return; }
   if (msg?.type === 'shot-clipboard') {
     (async () => {
       try {

@@ -69,8 +69,9 @@ function loadPopup(store = { opts: { format: 'jpg' } }) {
       },
     },
     // The popup's startup rec-check only has to reach the worker, so it is
-    // counted rather than left in `sent` with the messages a click sends.
-    runtime: { onMessage: { addListener: () => {} }, sendMessage: (msg) => { if (msg.type === 'rec-check') checks++; else sent.push(msg); return ack; } },
+    // counted rather than left in `sent` with the messages a click sends. Its
+    // capture-check finds no capture running (KAN-545).
+    runtime: { onMessage: { addListener: () => {} }, sendMessage: (msg) => { if (msg.type === 'capture-check') return Promise.resolve(false); if (msg.type === 'rec-check') checks++; else sent.push(msg); return ack; } },
     tabCapture: { getMediaStreamId: async () => 'sid' },
   };
 
