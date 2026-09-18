@@ -431,8 +431,17 @@ async function markSticky(tab, offset) {
     target: { tabId: tab.id },
     func: (y) => {
       const list = [];
-      for (const el of document.querySelectorAll('*')) {
-        if (getComputedStyle(el).position === 'sticky') list.push(el);
+      // querySelectorAll doesn't go into a shadow root, so each one it passes
+      // is searched in turn, closed ones too (KAN-507). chrome.dom throws on
+      // anything but an HTMLElement, an <svg> say, and nothing else can host
+      // a shadow root.
+      const roots = [document];
+      while (roots.length) {
+        for (const el of roots.pop().querySelectorAll('*')) {
+          if (getComputedStyle(el).position === 'sticky') list.push(el);
+          const shadow = el instanceof HTMLElement && chrome.dom.openOrClosedShadowRoot(el);
+          if (shadow) roots.push(shadow);
+        }
       }
       // One can be stuck already at the top of the page: a `bottom: 0` bar whose
       // place is further down sits pinned to the bottom of the first screen, and
@@ -440,9 +449,11 @@ async function markSticky(tab, offset) {
       // where `static` would put it, so each is read that way, all at once, and
       // put back before anything is painted. Only the ones that stick to the
       // page, though: one inside a scroller of its own moves with the page,
-      // stuck or not, so its place is where it is painted.
+      // stuck or not, so its place is where it is painted. The climb goes on
+      // through the host of a shadow root: a component in a scrolled box sticks
+      // to that box (KAN-507).
       const onPage = list.filter((el) => {
-        for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+        for (let p = el.parentElement || el.getRootNode().host; p && p !== document.body && p !== document.documentElement; p = p.parentElement || p.getRootNode().host) {
           if (/auto|scroll|hidden/.test(getComputedStyle(p).overflow)) return false;
         }
         return true;
@@ -479,9 +490,16 @@ async function setFixedHidden(tab, hide) {
         // every later slice would stitch it in again. Sticky elements are
         // hideStuckSticky's, slice by slice.
         const list = [];
-        for (const el of document.querySelectorAll('*')) {
-          if (getComputedStyle(el).position !== 'fixed') continue;
-          list.push([el, el.style.visibility]); el.style.visibility = 'hidden';
+        // Shadow roots too, the same walk as markSticky's (KAN-507):
+        // executeScript serializes each standalone, so they can't share it.
+        const roots = [document];
+        while (roots.length) {
+          for (const el of roots.pop().querySelectorAll('*')) {
+            const shadow = el instanceof HTMLElement && chrome.dom.openOrClosedShadowRoot(el);
+            if (shadow) roots.push(shadow);
+            if (getComputedStyle(el).position !== 'fixed') continue;
+            list.push([el, el.style.visibility]); el.style.visibility = 'hidden';
+          }
         }
         window.__shotHidden = list;
       } else {

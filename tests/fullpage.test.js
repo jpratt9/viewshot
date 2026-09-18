@@ -7,6 +7,10 @@ const vm = require('node:vm');
 const CODE = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 const PNG = 'data:image/png;base64,AAAA';
 
+// The page's HTMLElement. chrome.dom.openOrClosedShadowRoot takes one of these
+// and nothing else: Chrome 153 throws on an <svg> (KAN-507).
+class HTMLElement {}
+
 // A scrollable element that clamps writes the way a real one does — clamping is
 // what makes the last slice overlap the previous, so the tests need it.
 function el(scrollHeight, clientHeight) {
@@ -40,7 +44,7 @@ function smoothEl(scrollHeight, clientHeight) {
 
 // background.js in a sandbox wired to a fake page. chrome.*, the canvas, and
 // the capture are all mocked — nothing real is touched.
-function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, leaveAt = 0, leave = {}, frozenAt = 0, sameAt = [] }) {
+function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixed, failAt = 0, leaveAt = 0, leave = {}, frozenAt = 0, sameAt = [] }) {
   const canvases = [];
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; this.draws = []; canvases.push(this); }
@@ -70,7 +74,10 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
     URL, btoa, Date, clearTimeout,
     // Collapse the settle sleeps so tests stay fast. The capture deadline never passes.
     setTimeout: (fn, ms) => { if (ms !== captureTimeout && ms !== pageScriptTimeout) fn(); },
-    document: { documentElement: de, body, scrollingElement: de, querySelectorAll: () => fixed },
+    HTMLElement,
+    // light: what document.querySelectorAll finds, which is all of `fixed`
+    // unless a test puts some of them in a shadow root and passes its host.
+    document: { documentElement: de, body, scrollingElement: de, querySelectorAll: () => light },
     // A window that is drawing runs the callback; from frozenAt on it never does.
     // The probe for slice k runs before capture k, so captureAt is one short.
     requestAnimationFrame: (cb) => { if (!frozenAt || captureAt.length < frozenAt - 1) cb(); },
@@ -113,6 +120,12 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
       commands: { onCommand: { addListener() {} } },
       action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
       storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
+      dom: {
+        openOrClosedShadowRoot: (e) => {
+          if (!(e instanceof HTMLElement)) throw new Error('Error in invocation of dom.openOrClosedShadowRoot(HTMLElement element): ');
+          return e.root || null;
+        },
+      },
     },
   };
   vm.createContext(context);
@@ -350,6 +363,7 @@ function positioned(pos, top, bottom) {
   return {
     pos, seen,
     getBoundingClientRect: () => ({ top, bottom }),
+    getRootNode: () => ({}), // the document, which has no host
     style: {
       set visibility(v) { seen.push(v); }, get visibility() { return seen.length ? seen[seen.length - 1] : ''; },
       setProperty(name, value, priority = '') { if (value) inline[name] = [value, priority]; else delete inline[name]; },
@@ -478,7 +492,7 @@ test('reads a sticky element as the page\'s when nothing between it and the page
   // itself whatever their own overflow says: <body> is the scroller on a page
   // whose <body> scrolls, and <html> can hold elements added straight to it.
   const cases = {
-    'a wrapper with overflow: clip': () => ({ overflow: 'clip' }),
+    'a wrapper with overflow: clip': (body) => ({ overflow: 'clip', parentElement: body }),
     '<body>, scrolling': (body) => Object.assign(body, { overflow: 'auto' }),
     '<html>, overflow: hidden': (_body, de) => Object.assign(de, { overflow: 'hidden' }),
   };
@@ -522,6 +536,79 @@ test('marks and hides fixed elements once, and checks sticky ones on every slice
   await ctx.captureFullPage(TAB);
   // the marking, the fixed hide and the restore once each, and the sticky check on each of the four slices
   assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 7, 'the marking or the fixed hide ran more than once, or a slice went unchecked');
+});
+
+// --- fixed and sticky elements inside a shadow root -------------------------
+// document.querySelectorAll doesn't go into a shadow root, so a fixed or
+// sticky element inside a web component was never found: a fixed one was
+// stitched into every slice, and a sticky one into every slice it was stuck
+// in (KAN-507).
+
+// A web component: an element in the page whose shadow root holds `inside`.
+// Only an open root shows as `shadowRoot`; chrome.dom reaches either kind.
+function shadowHost(mode, ...inside) {
+  const root = { querySelectorAll: () => inside };
+  const host = Object.assign(new HTMLElement(), { root, shadowRoot: mode === 'open' ? root : null, getRootNode: () => ({}) });
+  root.host = host;
+  for (const e of inside) e.getRootNode = () => root;
+  return host;
+}
+
+test('hides a fixed element inside a shadow root, open or closed', async () => {
+  for (const mode of ['open', 'closed']) {
+    const chat = positioned('fixed', 300, 350); // a chat button the component pins to the viewport
+    const { ctx } = load({ de: el(767, 767), body: el(3052, 767), fixed: [chat], light: [shadowHost(mode, chat)] });
+    await ctx.captureFullPage(TAB);
+    assert.deepStrictEqual(chat.seen, ['hidden', ''], `a fixed element was left to repeat down the stitch (${mode} shadow root)`);
+  }
+});
+
+test('hides a sticky heading inside a shadow root only in the slices it is stuck in', async () => {
+  for (const mode of ['open', 'closed']) {
+    const body = el(3000, 713);
+    const heading = stickyAt(body, 1200, 2600);
+    const { ctx, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [heading], light: [shadowHost(mode, heading)] });
+    await ctx.captureFullPage(TAB);
+    assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', 'hidden', 'hidden', 'hidden'], `the heading was stitched into a slice it was stuck in (${mode} shadow root)`);
+    assert.strictEqual(heading.style.visibility, '', 'left the heading hidden');
+  }
+});
+
+test('searches a shadow root nested inside another', async () => {
+  // A component inside a component: the inner one's root only turns up while
+  // the outer one's is searched, and both passes have to search it.
+  const body = el(3000, 713);
+  const chat = positioned('fixed', 300, 350);
+  const heading = stickyAt(body, 1200, 2600);
+  const { ctx, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [chat, heading], light: [shadowHost('open', shadowHost('closed', chat, heading))] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(chat.seen, ['hidden', ''], 'a fixed element in a nested shadow root was left to repeat down the stitch');
+  assert.deepStrictEqual(shownAt.map(([, v]) => v), ['', '', 'hidden', 'hidden', 'hidden'], 'a sticky heading in a nested shadow root was stitched into a slice it was stuck in');
+});
+
+test('leaves a sticky header in a component inside a scroller where it is painted', async () => {
+  // Nothing in the component's shadow tree scrolls: the header sticks to the
+  // box the component sits in, which only a climb through the host reaches.
+  const body = el(3052, 767);
+  const header = positioned('sticky');
+  header.getBoundingClientRect = () => {
+    const top = (header.style.getPropertyValue('position') === 'static' ? 100 : 400) - body.scrollTop;
+    return { top, bottom: top + 30 };
+  };
+  const host = shadowHost('open', header);
+  host.parentElement = { overflow: 'auto' }; // the box
+  const { ctx } = load({ de: el(767, 767), body, fixed: [header], light: [host] });
+  await ctx.captureFullPage(TAB);
+  assert.ok(!header.seen.includes('hidden'), 'blanked a header stuck inside the scroller its component sits in');
+});
+
+test('asks chrome.dom about HTMLElements only', async () => {
+  // It throws on anything else, an <svg> icon say, and a throw there stops
+  // the capture. Nothing but an HTMLElement can host a shadow root anyway.
+  const icon = {}; // an <svg>: an element, but not an HTMLElement
+  const { ctx, captureAt } = load({ de: el(767, 767), body: el(3052, 767), light: [icon] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 767, 1534, 2285], 'an <svg> on the page stopped the capture');
 });
 
 // --- a window that stops drawing -------------------------------------------
