@@ -58,6 +58,9 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
   // can't catch the bug: the old code drew at the offsets it asked for, which
   // look right even though every slice was the same unmoved viewport.
   const captureAt = [];
+  // And what each capture showed of the fixed and sticky elements: the
+  // visibility each one had at that moment, in the order the test passed them.
+  const shownAt = [];
   let last = PNG;
   const scriptCalls = [];
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
@@ -94,6 +97,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
         captureVisibleTab: async () => {
           const at = Math.max(de ? de.scrollTop : 0, body ? body.scrollTop : 0);
           captureAt.push(at);
+          shownAt.push(fixed.map((e) => e.style.visibility));
           if (captureAt.length === failAt) throw new Error('capture failed');
           // A window that draws hands back a different frame at each offset; one
           // that isn't drawing hands back the frame it last presented, forever.
@@ -115,7 +119,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], failAt = 0, 
   vm.runInContext(CODE, context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
-  return { ctx: context, canvases, scriptCalls, captureAt };
+  return { ctx: context, canvases, scriptCalls, captureAt, shownAt };
 }
 
 const TAB = { id: 1, windowId: 9 };
@@ -332,7 +336,9 @@ test('stops rather than stitch in a tab the user switched to', async () => {
 // rest of the capture. That is right for a pinned header, which the first slice
 // already shows, but a sticky table header, section heading or sidebar further
 // down never appears in that slice: it was hidden in every slice that should
-// have shown it, leaving blank space where it belongs.
+// have shown it, leaving blank space where it belongs (KAN-218). Sparing it
+// then stitched it in again at the top of every later slice it stayed stuck
+// in (KAN-403): a sticky element is hidden only in the slices it is stuck in.
 
 // Keeps what the capture did to the element's visibility, in order.
 function positioned(pos, top, bottom) {
@@ -344,18 +350,67 @@ function positioned(pos, top, bottom) {
   };
 }
 
-test('leaves a sticky element that starts below the first screen alone', async () => {
-  const heading = positioned('sticky', 900, 960); // a sticky table header a screen down
-  const { ctx } = load({ de: el(767, 767), body: el(3052, 767), fixed: [heading] });
+// A `top: 0` sticky element whose place in the page is `at`, in a container
+// that ends at `end`: in its place until the page scrolls past it, then stuck
+// to the top of the viewport until the end of its container carries it off.
+function stickyAt(scroller, at, end, height = 40) {
+  const e = positioned('sticky');
+  e.getBoundingClientRect = () => {
+    const top = Math.min(Math.max(at - scroller.scrollTop, 0), end - height - scroller.scrollTop);
+    return { top, bottom: top + height };
+  };
+  return e;
+}
+
+test('hides a sticky heading only in the slices it is stuck in', async () => {
+  // The ticket's page: 3000 px tall in a 713 px viewport, with a 40 px heading
+  // whose place is 1200 px down, in a container running to 2600 px.
+  const body = el(3000, 713);
+  const heading = stickyAt(body, 1200, 2600);
+  const { ctx, captureAt, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [heading] });
   await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(heading.seen, [], 'blanked a sticky element the first slice never showed');
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287]);
+  // Shown in the slice that holds its place, hidden in the three it is stuck at the top of.
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', 'hidden', 'hidden', 'hidden'], 'the heading was stitched into a slice it was stuck in');
+  assert.strictEqual(heading.style.visibility, '', 'left the heading hidden');
+});
+
+test('leaves a sticky element that is never stuck alone', async () => {
+  const body = el(3052, 767);
+  const heading = stickyAt(body, 900, 940); // its container ends where it does, so it only ever scrolls by
+  const { ctx } = load({ de: el(767, 767), body, fixed: [heading] });
+  await ctx.captureFullPage(TAB);
+  assert.ok(!heading.seen.includes('hidden'), 'blanked a sticky element that was never stuck');
+});
+
+test('gives a sticky element back its own visibility, in its place and after the capture', async () => {
+  const body = el(3000, 713);
+  const heading = stickyAt(body, 1200, 2600);
+  heading.style.visibility = 'visible'; // set on the element by the page itself
+  const { ctx, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [heading] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['visible', 'visible', 'hidden', 'hidden', 'hidden'], 'lost the visibility the page gave the heading');
+  assert.strictEqual(heading.style.visibility, 'visible', 'restored the heading to something other than its own visibility');
+});
+
+test('counts a sticky element within a pixel of its place as in it', async () => {
+  const body = el(3052, 767);
+  const heading = stickyAt(body, 900, 940); // never stuck
+  // Rects and scroll offsets are fractional: once the page has scrolled, this one reads half a pixel off.
+  const exact = heading.getBoundingClientRect;
+  heading.getBoundingClientRect = () => { const r = exact(); const d = body.scrollTop ? 0.5 : 0; return { top: r.top + d, bottom: r.bottom + d }; };
+  const { ctx } = load({ de: el(767, 767), body, fixed: [heading] });
+  await ctx.captureFullPage(TAB);
+  assert.ok(!heading.seen.includes('hidden'), 'blanked a sticky element half a pixel from its place');
 });
 
 test('still hides a sticky header the first screen shows', async () => {
-  const header = positioned('sticky', 0, 60);
-  const { ctx } = load({ de: el(767, 767), body: el(3052, 767), fixed: [header] });
+  const body = el(3052, 767);
+  const header = stickyAt(body, 0, 3052, 60);
+  const { ctx, shownAt } = load({ de: el(767, 767), body, fixed: [header] });
   await ctx.captureFullPage(TAB);
-  assert.deepStrictEqual(header.seen, ['hidden', ''], 'a pinned sticky header was stitched into every slice');
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', 'hidden', 'hidden', 'hidden'], 'a pinned sticky header was stitched into every slice');
+  assert.strictEqual(header.style.visibility, '', 'left the header hidden');
 });
 
 test('still hides a fixed element wherever it sits', async () => {
@@ -372,11 +427,11 @@ test('runs no sticky pass on a page that fits one screen', async () => {
   assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'reportFrame', 'scrollAndReport'], 'ran the sticky passes on a page with one slice');
 });
 
-test('marks and hides once on a page that needs several slices', async () => {
+test('marks and hides fixed elements once, and checks sticky ones on every later slice', async () => {
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(3052, 767) });
   await ctx.captureFullPage(TAB);
-  // the marking, the hiding, and the restore - one each, however many slices
-  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 3, 'the marking or the hiding ran more than once');
+  // the marking, the fixed hide and the restore once each, and the sticky check on each of the three later slices
+  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 6, 'the marking or the fixed hide ran more than once, or a later slice went unchecked');
 });
 
 // --- a window that stops drawing -------------------------------------------

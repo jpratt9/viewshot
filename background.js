@@ -368,12 +368,14 @@ async function captureFullPage(tab, format) {
       // Stop rather than stack the same viewport down the canvas.
       if (i > 0 && actual <= landed) break;
       landed = actual;
-      // Which sticky elements this first screen shows, while the page is still
-      // at the top: the ones further down have to be left alone below.
-      if (i === 0 && positions.length > 1) await markStickyOnFirstScreen(tab);
-      // Keep fixed/sticky elements (pinned headers, banners) on the FIRST slice
-      // only; hide them on later slices so they aren't stitched in repeatedly.
+      // Where each sticky element sits, read while the page is still at the
+      // top and none of them is stuck yet.
+      if (i === 0 && positions.length > 1) await markSticky(tab, actual);
+      // Keep fixed elements (pinned headers, banners) on the FIRST slice only;
+      // hide them on later slices so they aren't stitched in repeatedly.
       if (i === 1 && !hid) { await setFixedHidden(tab, true); hid = true; }
+      // Sticky ones only in the slices they are stuck in (KAN-403).
+      if (i > 0) await hideStuckSticky(tab, actual);
       await sleep(500); // let the page settle after the scroll (captureVisible gates the rate limit)
       // captureVisibleTab hands back the last frame the window presented. A
       // window that isn't drawing - minimized, occluded - presents none, so
@@ -413,23 +415,42 @@ async function captureFullPage(tab, format) {
 
 // Temporarily hide position:fixed / position:sticky elements (the cause of
 // repeated headers/banners in scroll-stitch), then restore them afterward.
-// A sticky element is only worth hiding if it is one of the pinned ones the
-// first slice already shows. The rest - sticky table headers, section headings,
-// sidebars further down - never appear in that slice, so hiding them blanked
-// them out of every slice that should have shown them. Run at the top of the
-// page, where a sticky element is still where the document puts it.
-async function markStickyOnFirstScreen(tab) {
+// A sticky element repeats only in the slices it is stuck in, pinned to the
+// top of the viewport instead of where the document puts it: a pinned header
+// in every slice after the first, a sticky table header, section heading or
+// sidebar further down in the slices after the one that holds its place.
+// Hiding every sticky element blanked those out of the image (KAN-218), and
+// hiding only the ones the first screen showed stitched them in again at the
+// top of every slice they stayed stuck in (KAN-403). So each one's place is
+// read at the top of the page, and each later slice hides the ones that are
+// away from it. `offset` is where the stitch landed, not window.scrollY, which
+// reads 0 on a page whose <body> is what scrolls (see measurePage).
+async function markSticky(tab, offset) {
   await scriptWithTimeout({
     target: { tabId: tab.id },
-    func: () => {
+    func: (y) => {
       const list = [];
       for (const el of document.querySelectorAll('*')) {
         if (getComputedStyle(el).position !== 'sticky') continue;
-        const r = el.getBoundingClientRect();
-        if (r.bottom > 0 && r.top < window.innerHeight) list.push(el);
+        list.push([el, el.getBoundingClientRect().top + y, el.style.visibility]);
       }
       window.__shotSticky = list;
     },
+    args: [offset],
+  }, CAPTURE_SCRIPT_TIMEOUT_MS);
+}
+
+// Within a pixel of its place counts as in it: rects and scroll offsets are
+// fractional.
+async function hideStuckSticky(tab, offset) {
+  await scriptWithTimeout({
+    target: { tabId: tab.id },
+    func: (y) => {
+      for (const [el, top, v] of window.__shotSticky || []) {
+        el.style.visibility = Math.abs(el.getBoundingClientRect().top + y - top) > 1 ? 'hidden' : v;
+      }
+    },
+    args: [offset],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 
@@ -438,21 +459,18 @@ async function setFixedHidden(tab, hide) {
     target: { tabId: tab.id },
     func: (doHide) => {
       if (doHide) {
-        // Only the sticky elements the first screen showed: window.__shotSticky
-        // is what markStickyOnFirstScreen left behind. `fixed` is unconditional
-        // - it is pinned to the viewport wherever the page is, so every later
-        // slice would stitch it in again.
-        const sticky = window.__shotSticky || [];
+        // Only `fixed`: it is pinned to the viewport wherever the page is, so
+        // every later slice would stitch it in again. Sticky elements are
+        // hideStuckSticky's, slice by slice.
         const list = [];
         for (const el of document.querySelectorAll('*')) {
-          const pos = getComputedStyle(el).position;
-          if (pos !== 'fixed' && pos !== 'sticky') continue;
-          if (pos === 'sticky' && !sticky.includes(el)) continue;
+          if (getComputedStyle(el).position !== 'fixed') continue;
           list.push([el, el.style.visibility]); el.style.visibility = 'hidden';
         }
         window.__shotHidden = list;
       } else if (window.__shotHidden) {
         for (const [el, v] of window.__shotHidden) el.style.visibility = v;
+        for (const [el, , v] of window.__shotSticky || []) el.style.visibility = v; // whatever hideStuckSticky left hidden
         window.__shotHidden = null;
         window.__shotSticky = null;
       }
