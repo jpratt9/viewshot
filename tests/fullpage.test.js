@@ -402,6 +402,41 @@ test('lines the slices up on a page that scrolls itself between them', async () 
   assert.strictEqual(canvases[canvases.length - 1].height, 3000, "cut the image short by the page's own scroll");
 });
 
+// --- a page that scrolls itself while a slice settles ----------------------
+// Each slice was drawn where its scroll left the page, and shot once the page
+// had settled. A page that scrolled itself while the slice settled was shot
+// where it scrolled to: the rows between were left out, and the ones past them
+// went in twice. The frame check now says where the page is, and a page that
+// has moved and is as tall as it was goes back, and the slice settles again,
+// once (KAN-592).
+
+test('puts a page that scrolls itself while a slice settles back before it shoots that slice', async () => {
+  const body = el(3000, 713);
+  const { ctx, canvases, captureAt } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  // The page scrolls itself 200 px down while the second slice settles. Its height doesn't change.
+  let scrolled = false;
+  const timer = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms) => { if (ms === 500 && body.scrollTop === 713 && !scrolled) { scrolled = true; body.scrollTop += 200; } return timer(fn, ms); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287], 'shot the second slice where the page scrolled itself to');
+  assert.deepStrictEqual(canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
+  assert.strictEqual(canvases[canvases.length - 1].height, 3000, 'cut the image short');
+});
+
+test('shoots a slice where the page is when it scrolls itself again after it is put back', async () => {
+  // A page that scrolls itself 200 px down each time the second slice
+  // settles. It stops after five, so a stitch that puts it back every time
+  // still ends.
+  const body = el(3000, 713);
+  const { ctx, captureAt, scriptCalls } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  let scrolls = 0;
+  const timer = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms) => { if (ms === 500 && body.scrollTop === 713 && scrolls < 5) { scrolls++; body.scrollTop += 200; } return timer(fn, ms); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 913, 1426, 2139, 2287], 'put the page back more than once');
+  assert.strictEqual(scriptCalls.filter((f) => f === 'scrollAndReport').length, 7, 'did not put the page back once');
+});
+
 // --- pages that turn scroll anchoring off ----------------------------------
 // The stitch sees content above the screen change height by how far scroll
 // anchoring moves the offset (KAN-515). A page with `overflow-anchor: none`

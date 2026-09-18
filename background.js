@@ -426,18 +426,24 @@ function scrollAndReport(to, cleanup, last) {
 // shot beat that frame to the screen, and an element hidden just before the
 // frame check could still be in the shot (KAN-525). By the time the next frame
 // starts, the page has painted the one with the hides in it.
+// It answers with where the page is in that frame, and how tall it is: what
+// the shot finds (KAN-592).
 function reportFrame(ms) {
   return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = window.__vsScroller;
+      resolve({ top: el?.scrollTop, total: el?.scrollHeight });
+    }));
     setTimeout(() => resolve(false), ms); // whichever lands first wins; the other is a no-op
   });
 }
 
+// The frame check's answer, or false for a window that isn't drawing.
 async function pageIsDrawing(tab) {
   const [{ result }] = await scriptWithTimeout({
     target: { tabId: tab.id }, func: reportFrame, args: [FRAME_TIMEOUT_MS],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
-  return result === true;
+  return result || false;
 }
 
 // Scroll to y (with `last`, the last slice's report, y past where its rows are
@@ -533,7 +539,18 @@ async function captureFullPage(tab, format, popupId) {
         // saved a tall image that is the same screen over and over, with nothing
         // to say so. Ask the page for a frame rather than compare the pixels: a
         // flat stretch of page shoots the same bytes twice while drawing fine.
-        if (!await pageIsDrawing(tab)) throw new Error('Full page stopped: the window is not drawing (minimized?)');
+        const frame = await pageIsDrawing(tab);
+        if (!frame) throw new Error('Full page stopped: the window is not drawing (minimized?)');
+        // A page that scrolled itself while the slice settled, and is as tall
+        // as it was, would be shot where it scrolled to and drawn where the
+        // slice's scroll left it: the rows between were left out, and the ones
+        // past them went in twice (KAN-592). It goes back, and the slice settles
+        // and runs the passes that follow the settle again before it is shot.
+        // Once: a page that scrolls itself again is shot where it is.
+        if (shot === 1 && frame.top !== reached && frame.total === total) {
+          await scrollPageTo(tab, reached);
+          continue;
+        }
         url = await captureVisible(tab.windowId);
         // captureVisibleTab shoots whichever tab is showing in the window. If the
         // user switched tabs (or moved this one out) mid-stitch, this slice is
