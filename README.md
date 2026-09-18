@@ -6,7 +6,7 @@ A fast, minimal, **open-source** Chrome extension for screenshots — capture th
 - One-click capture: visible area · full page (scroll-stitch, sticky-header aware) · region select
 - PNG / JPG / WebP, with a quality slider
 - Tab recording to WebM, MP4 or GIF — choose one as the format, then **Record** and **Stop recording** (GIFs are 10 fps, up to 720px wide, and stop by themselves after about a minute)
-- **Record tab audio** adds the tab's sound to WebM recordings (off by default), and the tab keeps playing it to you while it records
+- **Record tab audio** adds the tab's sound to WebM and MP4 recordings (off by default), and the tab keeps playing it to you while it records
 - Filename templates — `{date} {time} {domain} {title}`
 - Download or copy straight to clipboard
 - **Hide scrollbar before capturing** keeps the scrollbar out of screenshots (on by default), except on chrome:// pages, the Web Store, other extensions' pages and data: URLs, where Chrome doesn't let extensions run scripts

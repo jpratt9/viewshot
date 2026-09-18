@@ -69,9 +69,10 @@ async function startRecording(streamId, format, width, height, cssPx, audio) {
   }
   log('requesting getUserMedia for streamId', streamId, 'mandatory=', mandatory);
   const constraints = { video: { mandatory } };
-  // The tab's sound as well, when "Record tab audio" is on: WebM only (KAN-221).
-  // It is redeemed from the same stream id, in the same legacy form.
-  if (audio && format === 'webm') constraints.audio = { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } };
+  // The tab's sound as well, when "Record tab audio" is on: WebM (KAN-221) and
+  // MP4 (KAN-544), not GIF. It is redeemed from the same stream id, in the same
+  // legacy form.
+  if (audio && format !== 'gif') constraints.audio = { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } };
   const start = { stopped: false };
   lastStart = start;
   let stream;
@@ -171,7 +172,7 @@ async function startRecording(streamId, format, width, height, cssPx, audio) {
     // dropped the last second of every recording on the floor.
     const chunks = [];
     rec.chunks = chunks;
-    const mime = pickMime(format);
+    const mime = pickMime(format, !!constraints.audio);
     log('starting MediaRecorder, mime=', mime);
     rec.recorder = new MediaRecorder(stream, { mimeType: mime });
     const recorder = rec.recorder;
@@ -250,10 +251,10 @@ function stopRecording(filename) {
 }
 
 // MP4 is there for QuickTime Player, which can't open WebM, so it names H.264
-// (avc1), the codec QuickTime plays.
-function pickMime(format) {
+// (avc1), the codec QuickTime plays, and AAC (mp4a.40.2) for the tab's sound.
+function pickMime(format, audio) {
   const types = format === 'mp4'
-    ? ['video/mp4;codecs=avc1', 'video/mp4']
+    ? [...(audio ? ['video/mp4;codecs=avc1,mp4a.40.2'] : []), 'video/mp4;codecs=avc1', 'video/mp4']
     : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
   return types.find((t) => MediaRecorder.isTypeSupported(t)) || `video/${format}`;
 }

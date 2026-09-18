@@ -91,8 +91,8 @@ const save = async () => {
 };
 // Quality slider only applies to the still image formats jpg/webp.
 const toggleQuality = () => { $('qualityRow').style.display = (['jpg', 'webp'].includes($('format').value)) ? 'flex' : 'none'; };
-// Tab audio is recorded into WebM only (KAN-221).
-const toggleAudio = () => { $('audioRow').style.display = $('format').value === 'webm' ? 'flex' : 'none'; };
+// Tab audio is recorded into WebM (KAN-221) and MP4 (KAN-544), not GIF.
+const toggleAudio = () => { $('audioRow').style.display = ['webm', 'mp4'].includes($('format').value) ? 'flex' : 'none'; };
 
 // Recording captures the whole visible tab, so full-page/region don't apply —
 // disable them and relabel the "Visible" button as "Record" for video formats.

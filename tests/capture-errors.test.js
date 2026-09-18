@@ -2162,15 +2162,39 @@ test('a WebM recording with audio off asks for video only', async () => {
   assert.strictEqual(o.players.length, 0);
 });
 
-for (const format of ['mp4', 'gif']) {
-  test(`a ${format} recording asks for video only, even with audio on`, async () => {
-    const o = loadOffscreen();
-    o.message({ ...AUDIO_START, format });
-    await settle();
-    assert.strictEqual(o.asked[0].audio, undefined);
-    assert.strictEqual(o.players.length, 0);
-  });
-}
+test('a gif recording asks for video only, even with audio on', async () => {
+  const o = loadOffscreen();
+  o.message({ ...AUDIO_START, format: 'gif' });
+  await settle();
+  assert.strictEqual(o.asked[0].audio, undefined);
+  assert.strictEqual(o.players.length, 0);
+});
+
+// MP4 takes the tab's sound too (KAN-544). It names AAC for it: MP4 is there
+// for QuickTime Player, and QuickTime plays AAC.
+test('an MP4 recording with audio on asks for the tab\'s audio and AAC, and is saved with it', async () => {
+  const o = loadOffscreen();
+  o.message({ ...AUDIO_START, format: 'mp4' });
+  await settle();
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(o.asked[0].audio ?? null)), { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: 'sid' } }, 'the tab\'s audio was not asked for');
+  assert.strictEqual(o.players.length, 1, 'the tab went quiet while it recorded');
+  const r = o.recorders[0];
+  assert.strictEqual(r.mimeType, 'video/mp4;codecs=avc1,mp4a.40.2');
+  r.flush({ size: 10 });
+  o.ctx.stopRecording('out.mp4');
+  r.finish();
+  await settle();
+  assert.strictEqual(o.downloads[0]?.[0].type, 'video/mp4', 'the recording was not saved as video/mp4');
+  assert.strictEqual(o.players[0].closed, true, 'the playback was left running');
+});
+
+test('an MP4 recording with audio on falls back to plain H.264 where AAC isn\'t supported', async () => {
+  const o = loadOffscreen();
+  o.ctx.MediaRecorder.isTypeSupported = (t) => t !== 'video/mp4;codecs=avc1,mp4a.40.2';
+  o.message({ ...AUDIO_START, format: 'mp4' });
+  await settle();
+  assert.strictEqual(o.recorders[0].mimeType, 'video/mp4;codecs=avc1');
+});
 
 test('a failed WebM recording with audio lets go of the tab\'s audio', async () => {
   const o = loadOffscreen();

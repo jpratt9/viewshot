@@ -171,8 +171,8 @@ test('the quality row stays hidden for png', async () => {
   assert.strictEqual(popup.els.qualityRow.style.display, 'none');
 });
 
-test('the audio row shows only for WebM, and follows the format', async () => {
-  for (const [format, display] of [['webm', 'flex'], ['mp4', 'none'], ['gif', 'none'], ['jpg', 'none']]) {
+test('the audio row shows only for WebM and MP4, and follows the format', async () => {
+  for (const [format, display] of [['webm', 'flex'], ['mp4', 'flex'], ['gif', 'none'], ['jpg', 'none']]) {
     const popup = await loadPopup({ opts: { format } });
     assert.strictEqual(popup.els.audioRow.style.display, display, format);
   }
