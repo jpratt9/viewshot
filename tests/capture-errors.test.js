@@ -917,8 +917,17 @@ function recStart(bg) {
   return sent;
 }
 
-test('a recording of a page that refuses scripts is still sized to the tab', async () => {
+test('a recording of a page that refuses scripts is sized from a visible tab capture', async () => {
   const bg = loadBg({ scriptFails: true });
+  const sent = recStart(bg);
+  await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
+  const start = sent.find((m) => m.type === 'rec-start-offscreen');
+  assert.deepStrictEqual([start.width, start.height], [100, 100], 'the capture used the physical pixels from the createImageBitmap mock');
+  assert.strictEqual(start.cssPx, undefined, 'physical pixels need no scaling');
+});
+
+test('a recording of a page that refuses scripts and captures is still sized to the tab', async () => {
+  const bg = loadBg({ scriptFails: true, captureFails: () => 'Cannot access' });
   const sent = recStart(bg);
   await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
   const start = sent.find((m) => m.type === 'rec-start-offscreen');
@@ -943,8 +952,8 @@ test('a recording of a tab Chrome reports no size for is left unpinned', async (
 // the dims instead and the offscreen document — which has one, and the
 // display's — scales them.
 
-test('a recording of a page that refuses scripts says its dims are CSS pixels', async () => {
-  const bg = loadBg({ scriptFails: true });
+test('a recording of a page that refuses scripts and captures says its dims are CSS pixels', async () => {
+  const bg = loadBg({ scriptFails: true, captureFails: () => 'Cannot access' });
   const sent = recStart(bg);
   await bg.ctx.startRecording('sid', { ...OPTS, format: 'webm' }, TAB.id);
   const start = sent.find((m) => m.type === 'rec-start-offscreen');
@@ -1445,7 +1454,8 @@ test('a start gives up on a page that never answers, and still records', async (
   assert.strictEqual(reply, true, 'still waiting on a page that will never answer');
   const start = sent.find((m) => m.type === 'rec-start-offscreen');
   assert.ok(start, 'the recording was never started');
-  assert.deepStrictEqual([start.width, start.height], [TAB.width, TAB.height], 'not sized to the tab the viewport read gave up on');
+  assert.deepStrictEqual([start.width, start.height], [100, 100], 'not sized from the visible tab capture the viewport read fell back on');
+  assert.strictEqual(start.cssPx, undefined, 'physical pixels need no scaling');
 });
 
 test('a start stopped while it waits on the page records nothing, and the next start goes ahead', async () => {

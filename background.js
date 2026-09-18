@@ -931,8 +931,18 @@ async function getViewport(tab) {
     });
     return result;
   } catch (e) {
-    console.warn('[ViewShot] getViewport failed:', e);
-    return tab.width && tab.height ? { width: tab.width, height: tab.height, cssPx: true } : null;
+    console.warn('[ViewShot] getViewport script failed:', e);
+    if (tab.width && tab.height) {
+      try {
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 10 });
+        const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
+        return { width: bmp.width, height: bmp.height };
+      } catch (err) {
+        console.warn('[ViewShot] getViewport capture fallback failed:', err);
+        return { width: tab.width, height: tab.height, cssPx: true };
+      }
+    }
+    return null;
   }
 }
 
