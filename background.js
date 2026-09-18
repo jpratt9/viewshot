@@ -384,6 +384,10 @@ async function captureFullPage(tab, format) {
       // hide above ran before they were there (KAN-522). It goes before the
       // frame check, so the frame the shot waits for has this hide in it.
       if (i > 0) await setFixedHidden(tab, true);
+      // And the sticky ones the page put in, or made sticky, while it settled:
+      // the listing above ran before they were there (KAN-517). The check runs
+      // again for every listed one, before the frame check too.
+      if (hid) { await markSticky(tab, false); await hideStuckSticky(tab); }
       // captureVisibleTab hands back the last frame the window presented. A
       // window that isn't drawing - minimized, occluded - presents none, so
       // every slice comes back as the frame before it. The offsets still

@@ -356,7 +356,9 @@ test('stops rather than stitch in a tab the user switched to', async () => {
 // place is read as `static`, and the first slice is checked too (KAN-501).
 // And a place can move while the capture runs, so it is read on every slice
 // (KAN-502). One can also be added to the page, or turn sticky, once the page
-// has scrolled, so every slice lists the ones that have (KAN-503).
+// has scrolled, so every slice lists the ones that have (KAN-503). The page can
+// do that while the slice settles, too, so each slice lists and checks them
+// again once it has (KAN-517).
 
 // Keeps what the capture did to the element's visibility, in order, and holds
 // the inline `position` a capture sets on it and puts back.
@@ -474,6 +476,58 @@ test('starts a new sticky list on the first slice', async () => {
   ctx.window.__shotSticky = [[gone, '']];
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(gone.seen, [], 'wrote to an element on a list an earlier capture left behind');
+});
+
+test('hides a header the page makes sticky while the second slice settles, in that slice', async () => {
+  // A 60 px header at the top of the page that the page makes sticky on a timer
+  // its first scroll starts: the second slice's listing still reads it as
+  // static, and it is stuck at once (KAN-517).
+  const body = el(3000, 713);
+  const header = stickyAt(body, 0, 3000, 60);
+  let turned = false;
+  Object.defineProperty(header, 'pos', { get: () => (turned ? 'sticky' : 'static') });
+  const { ctx, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [header] });
+  const timer = ctx.setTimeout; // the page's timer runs during the second slice's 500 ms settle
+  ctx.setTimeout = (fn, ms) => { if (ms === 500 && body.scrollTop === 713) turned = true; return timer(fn, ms); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', 'hidden', 'hidden', 'hidden', 'hidden'], 'the header was stitched into the slice it turned sticky in');
+  assert.strictEqual(header.style.visibility, '', 'left the header hidden');
+});
+
+test('hides a sticky heading the page adds while the second slice settles, in that slice', async () => {
+  // A 40 px heading whose place is 300 px down, in a container running to
+  // 2600 px, that the page puts in on a timer its first scroll starts: the
+  // second slice's listing can't find it, and it is stuck at once (KAN-517).
+  const body = el(3000, 713);
+  const heading = stickyAt(body, 300, 2600);
+  const light = []; // what the page has in it
+  const { ctx, captureAt, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [heading], light });
+  const timer = ctx.setTimeout; // the page's timer runs during the second slice's 500 ms settle
+  ctx.setTimeout = (fn, ms) => { if (ms === 500 && body.scrollTop === 713 && !light.length) light.push(heading); return timer(fn, ms); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2287]);
+  // Not in the page for the first slice, stuck at the top of the four after.
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', 'hidden', 'hidden', 'hidden', 'hidden'], 'the heading was stitched into the slice it turned up in');
+  assert.strictEqual(heading.style.visibility, '', 'left the heading hidden');
+});
+
+test('hides a bar the page makes sticky while the first slice settles, in that slice', async () => {
+  // The page was scrolled when the capture started, so the scroll to the top is
+  // the capture's own too. A 40 px `bottom: 0` bar whose place is 2400 px down,
+  // made sticky on a timer that scroll starts, is stuck to the bottom of the
+  // first screen at once (KAN-517).
+  const body = el(3000, 713);
+  body.scrollTop = 640;
+  const bar = stickyToBottomAt(body, 2400, 0, 713);
+  let turned = false;
+  Object.defineProperty(bar, 'pos', { get: () => (turned ? 'sticky' : 'static') });
+  const { ctx, shownAt } = load({ de: el(713, 713), body, ih: 713, fixed: [bar] });
+  const timer = ctx.setTimeout; // the page's timer runs during the first slice's 500 ms settle
+  ctx.setTimeout = (fn, ms) => { if (ms === 500 && body.scrollTop === 0) turned = true; return timer(fn, ms); };
+  await ctx.captureFullPage(TAB);
+  // Stuck to the bottom of the first three slices, in its place in the last two.
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['hidden', 'hidden', 'hidden', '', ''], 'the bar was stitched into the first slice, where it was stuck');
+  assert.strictEqual(bar.style.visibility, '', 'left the bar hidden');
 });
 
 test('leaves a sticky element that is never stuck alone', async () => {
@@ -594,11 +648,11 @@ test('runs no sticky pass on a page that fits one screen', async () => {
   assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'reportFrame', 'scrollAndReport'], 'ran the sticky passes on a page with one slice');
 });
 
-test('hides fixed elements before and after the settle on every slice but the first, and lists and checks sticky ones on every slice', async () => {
+test('hides fixed elements before and after the settle on every slice but the first, and lists and checks sticky ones before and after the settle on every slice', async () => {
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(3052, 767) });
   await ctx.captureFullPage(TAB);
-  // the fixed hide twice on each of the three slices after the first, the restore once, and the sticky listing and check on each of the four slices
-  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 15, 'the fixed hide ran on the first slice or missed a later one or its settle, or a slice went unlisted or unchecked');
+  // the fixed hide twice on each of the three slices after the first, the restore once, and the sticky listing and check twice on each of the four slices
+  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 23, 'the fixed hide ran on the first slice or missed a later one or its settle, or a slice or its settle went unlisted or unchecked');
 });
 
 // --- fixed elements that turn up after the second slice ---------------------
@@ -684,13 +738,14 @@ test('hides an element the page only makes fixed while the second slice settles'
   assert.strictEqual(header.style.visibility, '', 'left the header hidden');
 });
 
-test('asks for a frame only after the fixed hide that follows the settle', async () => {
+test('asks for a frame only after the passes that follow the settle', async () => {
   // The shot is taken once the page has started a frame, and that frame has to
-  // come after the hide, or the shot can show what the hide took out.
+  // come after the hides, or the shot can show what they took out (KAN-517).
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(1534, 767) }); // two slices
   await ctx.captureFullPage(TAB);
-  // the second slice: the sticky listing, the fixed hide, the sticky check, the fixed hide again, and then the frame
-  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'reportFrame', 'scrollAndReport', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'scrollAndReport'], 'asked for the frame before the fixed hide that follows the settle');
+  // the first slice: the sticky listing and check, both again once it has settled, and then the frame;
+  // the second: the sticky listing, the fixed hide and the sticky check, all three again once it has settled, and then the frame
+  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'func', 'func', 'reportFrame', 'scrollAndReport', 'func', 'func', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'scrollAndReport'], 'asked for the frame before a pass that follows the settle');
 });
 
 // --- fixed and sticky elements inside a shadow root -------------------------
