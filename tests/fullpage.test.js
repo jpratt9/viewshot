@@ -654,7 +654,7 @@ test('hides fixed elements before and after the settle and after the shot on eve
   const { ctx, scriptCalls } = load({ de: el(767, 767), body: el(3052, 767) });
   await ctx.captureFullPage(TAB);
   // the fixed hide three times on each of the three slices after the first, the restore once, and the sticky listing and check three times on each of the four slices
-  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 34, 'the fixed hide ran on the first slice or missed a later one, its settle or its shot, or a slice or its settle went unlisted or unchecked');
+  assert.strictEqual(scriptCalls.filter((n) => n === 'func').length, 25, 'the fixed hide ran on the first slice or missed a later one, its settle or its shot, or a slice or its settle went unlisted or unchecked');
 });
 
 // --- fixed elements that turn up after the second slice ---------------------
@@ -747,7 +747,7 @@ test('asks for a frame only after the passes that follow the settle', async () =
   await ctx.captureFullPage(TAB);
   // the first slice: the sticky listing and check, both again once it has settled, the frame, and both again after the shot;
   // the second: the sticky listing, the fixed hide and the sticky check, all three again once it has settled, the frame, and all three again after the shot
-  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'func', 'scrollAndReport', 'func', 'func', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'func', 'func', 'func', 'scrollAndReport'], 'asked for the frame before a pass that follows the settle');
+  assert.deepStrictEqual(scriptCalls, ['measurePage', 'scrollAndReport', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'func', 'scrollAndReport', 'func', 'func', 'func', 'func', 'reportFrame', 'func', 'func', 'func', 'scrollAndReport'], 'asked for the frame before a pass that follows the settle');
 });
 
 // --- fixed elements that turn up after a slice's last fixed hide ------------
@@ -822,16 +822,14 @@ test('settles again and runs the passes that follow the settle before it shoots 
     'func',            'reportFrame',
     'func',            'func',
     'scrollAndReport', 'func',
+    'func',            'settle',
     'func',            'func',
-    'settle',          'func',
+    'reportFrame',     'func',
+    'func',            'settle',
     'func',            'func',
     'reportFrame',     'func',
     'func',            'func',
-    'settle',          'func',
-    'func',            'func',
-    'reportFrame',     'func',
-    'func',            'func',
-    'func',            'scrollAndReport'
+    'scrollAndReport'
   ], 'shot the slice again before it settled and ran the passes that follow the settle, or checked after its second shot');
 });
 

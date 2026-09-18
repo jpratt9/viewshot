@@ -461,14 +461,11 @@ async function captureFullPage(tab, format, popupId) {
       // The sticky elements that stick to the page, listed on the first slice
       // and added to on every later one (KAN-503). From here on there is
       // something for the finally to put back.
-      if (m.total > m.vh) { await markSticky(tab, i === 0); hid = true; }
-      // Keep fixed elements (pinned headers, banners) on the FIRST slice only;
-      // hide them on later slices so they aren't stitched in repeatedly, and
-      // on each one the ones that have turned up since (KAN-516).
-      if (i > 0) await setFixedHidden(tab, true, i === 1);
-      // Sticky ones only in the slices they are stuck in (KAN-403), the first
-      // included: a `bottom` one can be stuck there already (KAN-501).
-      if (hid) await hideStuckSticky(tab);
+      if (m.total > m.vh) hid = true;
+      if (hid) {
+        await markFixedAndSticky(tab, i > 0, i === 1, i === 0);
+        await hideStuckSticky(tab);
+      }
       // A slice can be shot twice: see the fixed hide after the shot (KAN-525).
       let url;
       for (let shot = 1; ; shot++) {
@@ -476,11 +473,10 @@ async function captureFullPage(tab, format, popupId) {
         // And the fixed ones the page put in, or pinned, while it settled: the
         // hide above ran before they were there (KAN-522). It goes before the
         // frame check, so the frame the shot waits for has this hide in it.
-        if (i > 0) await setFixedHidden(tab, true);
-        // And the sticky ones the page put in, or made sticky, while it settled:
-        // the listing above ran before they were there (KAN-517). The check runs
-        // again for every listed one, before the frame check too.
-        if (hid) { await markSticky(tab, false); await hideStuckSticky(tab); }
+        if (hid) {
+          await markFixedAndSticky(tab, i > 0, false, false);
+          await hideStuckSticky(tab);
+        }
         // captureVisibleTab hands back the last frame the window presented. A
         // window that isn't drawing - minimized, occluded - presents none, so
         // every slice comes back as the frame before it. The offsets still
@@ -504,9 +500,9 @@ async function captureFullPage(tab, format, popupId) {
         // the page that long to put in another. The second shot is kept: the
         // next slice's first fixed hide finds whatever turns up after it.
         let reshot = false;
-        if (i > 0 && await setFixedHidden(tab, true)) reshot = true;
         if (hid) {
-          if (await markSticky(tab, false)) reshot = true;
+          const res = await markFixedAndSticky(tab, i > 0, false, false);
+          if (res.fixedReshot || res.stickyReshot) reshot = true;
           if (await hideStuckSticky(tab)) reshot = true;
         }
         if (i === 0 || shot === 2 || !reshot) break;
@@ -601,7 +597,7 @@ async function captureFullPage(tab, format, popupId) {
       }
     }
   } finally {
-    if (hid) await setFixedHidden(tab, false); // restore
+    if (hid) await restoreFixedAndSticky(tab); // restore
     await scrollPageTo(tab, m.prevY, true);
   }
 
@@ -628,57 +624,6 @@ async function captureFullPage(tab, format, popupId) {
 // hiding only the ones the first screen showed stitched them in again at the
 // top of every slice they stayed stuck in (KAN-403). So each slice hides the
 // ones that are away from their place (see hideStuckSticky).
-async function markSticky(tab, first) {
-  const [{ result }] = await scriptWithTimeout({
-    target: { tabId: tab.id },
-    func: (first) => {
-      const list = [];
-      // querySelectorAll doesn't go into a shadow root, so each one it passes
-      // is searched in turn, closed ones too (KAN-507). chrome.dom throws on
-      // anything but an HTMLElement, an <svg> say, and nothing else can host
-      // a shadow root.
-      const roots = [document];
-      while (roots.length) {
-        for (const el of roots.pop().querySelectorAll('*')) {
-          if (getComputedStyle(el).position === 'sticky') list.push(el);
-          const shadow = el instanceof HTMLElement && chrome.dom.openOrClosedShadowRoot(el);
-          if (shadow) roots.push(shadow);
-        }
-      }
-      // Only the ones that stick to the page are listed: one inside a scroller
-      // of its own moves with the page, stuck or not, so it is always painted
-      // where the page has it and never has to be hidden. The climb goes on
-      // through the host of a shadow root: a component in a scrolled box sticks
-      // to that box (KAN-507). And an element a component shows through a slot
-      // is laid out under the slot, so the climb goes there first: a scroller
-      // around the slot is its own (KAN-509). assignedSlot only answers for an
-      // open root, so for a closed one the climb looks through the root
-      // chrome.dom hands back for the host, for the slot whose
-      // assignedElements() holds the element (KAN-511).
-      const slotOf = (n) => {
-        const root = n.parentElement instanceof HTMLElement && chrome.dom.openOrClosedShadowRoot(n.parentElement);
-        return root && [...root.querySelectorAll('slot')].find((s) => s.assignedElements().includes(n));
-      };
-      const onPage = list.filter((el) => {
-        for (let p = el.assignedSlot || slotOf(el) || el.parentElement || el.getRootNode().host; p && p !== document.body && p !== document.documentElement; p = p.assignedSlot || slotOf(p) || p.parentElement || p.getRootNode().host) {
-          if (/auto|scroll|hidden/.test(getComputedStyle(p).overflow)) return false;
-        }
-        return true;
-      });
-      // After the first slice, only the ones that have turned up since are
-      // added: put in the page, or made sticky, once it scrolled (KAN-503). One
-      // listed already keeps the visibility recorded for it: by now it has the
-      // one hideStuckSticky gave it, not its own.
-      const listed = first ? [] : window.__shotSticky || [];
-      const added = onPage.filter((el) => !listed.some(([e]) => e === el)).map((el) => [el, el.style.visibility]);
-      window.__shotSticky = [...listed, ...added];
-      return added.length > 0;
-    },
-    args: [first],
-  }, CAPTURE_SCRIPT_TIMEOUT_MS);
-  return result;
-}
-
 // Where the page has a sticky element is where `static` puts it: one that
 // isn't stuck sits there, and one that is stuck can be anywhere else, a
 // `bottom: 0` bar whose place is further down pinned to the bottom of the
@@ -711,44 +656,66 @@ async function hideStuckSticky(tab) {
   return result;
 }
 
-async function setFixedHidden(tab, hide, first = false) {
+async function markFixedAndSticky(tab, doFixed, fixedFirst, stickyFirst) {
   const [{ result }] = await scriptWithTimeout({
     target: { tabId: tab.id },
-    func: (doHide, first) => {
-      if (doHide) {
-        // Only `fixed`: it is pinned to the viewport wherever the page is, so
-        // every later slice would stitch it in again. Sticky elements are
-        // hideStuckSticky's, slice by slice. After the first pass, only the
-        // ones that have turned up since are added: put in the page, or made
-        // fixed, once it scrolled (KAN-516). One hidden already keeps the
-        // visibility recorded for it: by now it has the `hidden` it was given.
-        const list = first ? [] : window.__shotHidden || [];
-        const before = list.length;
-        // Shadow roots too, the same walk as markSticky's (KAN-507):
-        // executeScript serializes each standalone, so they can't share it.
-        const roots = [document];
-        while (roots.length) {
-          for (const el of roots.pop().querySelectorAll('*')) {
-            const shadow = el instanceof HTMLElement && chrome.dom.openOrClosedShadowRoot(el);
-            if (shadow) roots.push(shadow);
-            if (getComputedStyle(el).position !== 'fixed' || list.some(([e]) => e === el)) continue;
-            list.push([el, el.style.visibility]); el.style.visibility = 'hidden';
+    func: (doFixed, fixedFirst, stickyFirst) => {
+      const fixedAdded = [];
+      const stickyList = [];
+      const fixedList = fixedFirst ? [] : window.__shotHidden || [];
+      const stickyListed = stickyFirst ? [] : window.__shotSticky || [];
+      
+      const roots = [document];
+      while (roots.length) {
+        for (const el of roots.pop().querySelectorAll('*')) {
+          const shadow = el instanceof HTMLElement && chrome.dom.openOrClosedShadowRoot(el);
+          if (shadow) roots.push(shadow);
+          
+          const pos = getComputedStyle(el).position;
+          if (doFixed && pos === 'fixed' && !fixedList.some(([e]) => e === el)) {
+            fixedAdded.push([el, el.style.visibility]);
+            el.style.visibility = 'hidden';
           }
+          if (pos === 'sticky') stickyList.push(el);
         }
-        window.__shotHidden = list;
-        return list.length > before; // whether it hid one no pass before it had (KAN-525)
-      } else {
-        // Not only after the fixed hide: a sticky element can be hidden on the
-        // first slice, and a capture can stop there (KAN-501).
-        for (const [el, v] of window.__shotHidden || []) el.style.visibility = v;
-        for (const [el, v] of window.__shotSticky || []) el.style.visibility = v; // whatever hideStuckSticky left hidden
-        window.__shotHidden = null;
-        window.__shotSticky = null;
       }
+      
+      let fixedReshot = false;
+      if (doFixed) {
+        window.__shotHidden = [...fixedList, ...fixedAdded];
+        fixedReshot = fixedAdded.length > 0;
+      }
+      
+      const slotOf = (n) => {
+        const root = n.parentElement instanceof HTMLElement && chrome.dom.openOrClosedShadowRoot(n.parentElement);
+        return root && [...root.querySelectorAll('slot')].find((s) => s.assignedElements().includes(n));
+      };
+      const onPage = stickyList.filter((el) => {
+        for (let p = el.assignedSlot || slotOf(el) || el.parentElement || el.getRootNode().host; p && p !== document.body && p !== document.documentElement; p = p.assignedSlot || slotOf(p) || p.parentElement || p.getRootNode().host) {
+          if (/auto|scroll|hidden/.test(getComputedStyle(p).overflow)) return false;
+        }
+        return true;
+      });
+      const added = onPage.filter((el) => !stickyListed.some(([e]) => e === el)).map((el) => [el, el.style.visibility]);
+      window.__shotSticky = [...stickyListed, ...added];
+      
+      return { fixedReshot, stickyReshot: added.length > 0 };
     },
-    args: [hide, first],
+    args: [doFixed, fixedFirst, stickyFirst],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
   return result;
+}
+
+async function restoreFixedAndSticky(tab) {
+  await scriptWithTimeout({
+    target: { tabId: tab.id },
+    func: () => {
+      for (const [el, v] of window.__shotHidden || []) el.style.visibility = v;
+      for (const [el, v] of window.__shotSticky || []) el.style.visibility = v;
+      window.__shotHidden = null;
+      window.__shotSticky = null;
+    },
+  }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 
 // Temporarily hide the page scrollbar(s) so they don't show up in the shot.
