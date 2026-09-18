@@ -293,6 +293,7 @@ function measurePage() {
     }
   }
   el = el || document.scrollingElement || de;
+  window.__vsScroller = el;
   const isRoot = el === de || el === b || el === document.scrollingElement;
   const rect = isRoot ? null : el.getBoundingClientRect();
   return {
@@ -306,20 +307,24 @@ function measurePage() {
   };
 }
 
-function scrollAndReport(to) {
+function scrollAndReport(to, cleanup) {
   const de = document.documentElement, b = document.body;
-  let el = de.scrollHeight > de.clientHeight + 1 ? de
-         : (b && b.scrollHeight > b.clientHeight + 1) ? b
-         : null;
+  let el = window.__vsScroller;
   if (!el) {
-    for (const node of document.querySelectorAll('*')) {
-      if (node.scrollHeight > node.clientHeight + 1) {
-        const style = window.getComputedStyle(node);
-        if (style.overflowY === 'auto' || style.overflowY === 'scroll') { el = node; break; }
+    el = de.scrollHeight > de.clientHeight + 1 ? de
+           : (b && b.scrollHeight > b.clientHeight + 1) ? b
+           : null;
+    if (!el) {
+      for (const node of document.querySelectorAll('*')) {
+        if (node.scrollHeight > node.clientHeight + 1) {
+          const style = window.getComputedStyle(node);
+          if (style.overflowY === 'auto' || style.overflowY === 'scroll') { el = node; break; }
+        }
       }
     }
+    el = el || document.scrollingElement || de;
   }
-  el = el || document.scrollingElement || de;
+  if (cleanup) delete window.__vsScroller;
   const isRoot = el === de || el === b || el === document.scrollingElement;
   // 'instant' overrides a page's `scroll-behavior: smooth` (Bootstrap 5,
   // Tailwind's scroll-smooth). Without it the scroll animates, the read below
@@ -351,9 +356,9 @@ async function pageIsDrawing(tab) {
 // Scroll to y and report where the page ACTUALLY landed. The caller stitches
 // at the returned offset rather than the requested one, so a page that clamps,
 // animates, or ignores the scroll still produces a correctly aligned image.
-async function scrollPageTo(tab, y) {
+async function scrollPageTo(tab, y, cleanup = false) {
   const [{ result }] = await scriptWithTimeout({
-    target: { tabId: tab.id }, func: scrollAndReport, args: [y],
+    target: { tabId: tab.id }, func: scrollAndReport, args: [y, cleanup],
   }, CAPTURE_SCRIPT_TIMEOUT_MS);
   return result || { actual: 0, total: 0 };
 }
@@ -493,7 +498,7 @@ async function captureFullPage(tab, format) {
     }
   } finally {
     if (hid) await setFixedHidden(tab, false); // restore
-    await scrollPageTo(tab, m.prevY);
+    await scrollPageTo(tab, m.prevY, true);
   }
 
   // Trim to what was actually stitched, so an early stop yields a short correct
