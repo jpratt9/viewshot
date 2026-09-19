@@ -1516,3 +1516,43 @@ test('KAN-591: draws each band once when content above grows and content below s
   assert.strictEqual(canvases[canvases.length - 1].height, 2700);
 });
 
+
+test('re-hides a listed fixed element the page unhides during the capture', async () => {
+  const body = el(3000, 713);
+  const header = positioned('fixed', 0, 60);
+  const { ctx, shownAt, captureAt } = load({ de: el(713, 713), body, ih: 713, dpr: 1, fixed: [header] });
+  const frame = ctx.requestAnimationFrame;
+  ctx.requestAnimationFrame = (cb) => {
+    if (captureAt.length === 1 && header.style.visibility === 'hidden') {
+      header.style.visibility = '';
+    }
+    return frame(cb);
+  };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', 'hidden', 'hidden', 'hidden', 'hidden']);
+});
+
+test('prunes an element that loses its fixed positioning and restores its visibility', async () => {
+  const body = el(3000, 713);
+  const header = positioned('fixed', 0, 60);
+  Object.defineProperty(header, 'pos', { get: () => (captureAt.length >= 3 ? 'static' : 'fixed') });
+  const { ctx, shownAt, captureAt } = load({ de: el(713, 713), body, ih: 713, dpr: 1, fixed: [header] });
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', 'hidden', 'hidden', '', '', '']);
+});
+
+test('prunes an element that loses its sticky positioning and restores its visibility', async () => {
+  const body = el(3000, 713);
+  const header = positioned('sticky', 0, 60);
+  Object.defineProperty(header, 'pos', { get: () => (captureAt.length >= 3 ? 'static' : 'sticky') });
+  const { ctx, shownAt, captureAt } = load({ de: el(713, 713), body, ih: 713, dpr: 1, fixed: [header] });
+  const frame = ctx.requestAnimationFrame;
+  ctx.requestAnimationFrame = (cb) => {
+    if (captureAt.length === 2 && header.style.visibility === '') {
+      header.style.visibility = 'hidden';
+    }
+    return frame(cb);
+  };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', 'hidden', '', '', '']);
+});
