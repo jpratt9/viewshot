@@ -1468,3 +1468,26 @@ test('names the popup that asked for the full page in its progress, and none for
 
 
 
+test('KAN-597: puts a page back when it scrolls itself and grows while settling', async () => {
+  const body = el(3000, 713);
+  let baseScroll = 0;
+  body.querySelectorAll = () => {
+    baseScroll = body.scrollTop;
+    return [{ getBoundingClientRect: () => ({ top: 100 - (body.scrollTop - baseScroll), bottom: 110 - (body.scrollTop - baseScroll), height: 10 }) }];
+  };
+  const { ctx, canvases, captureAt } = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  const frame = ctx.requestAnimationFrame;
+  let settled = false;
+  ctx.requestAnimationFrame = (cb) => {
+    // When the slice is settling for the second capture (target 713), simulate scrolling/growing
+    if (captureAt.length === 1 && body.scrollTop === 713 && !settled) {
+      settled = true;
+      body.scrollTop += 200;
+      body.scrollHeight += 100;
+    }
+    return frame(cb);
+  };
+  await ctx.captureFullPage(TAB);
+  // It should be put back to 713 (actually `reached`), and captureAt will show it shot at 713 not 913.
+  assert.deepStrictEqual(captureAt, [0, 713, 1426, 2139, 2387]);
+});

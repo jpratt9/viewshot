@@ -466,7 +466,8 @@ function reportFrame(ms) {
   return new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => {
       const el = window.__vsScroller;
-      resolve({ top: el?.scrollTop, total: el?.scrollHeight });
+      const anchor = window.__vsAnchor;
+      resolve({ top: el?.scrollTop, total: el?.scrollHeight, anchorTop: anchor ? anchor.getBoundingClientRect().top : undefined });
     }));
     setTimeout(() => resolve(false), ms); // whichever lands first wins; the other is a no-op
   });
@@ -592,8 +593,15 @@ async function captureFullPage(tab, format, popupId) {
         // A second shot, for a fixed element that turned up after the first
         // (KAN-525), is drawn in the same place, so the page goes back before
         // that one too (KAN-605).
-        if (backs < 2 && frame.top !== reached && frame.total === total) {
-          await scrollPageTo(tab, reached);
+        let targetFrameFrom = frame.top;
+        if (last && frame.anchorTop !== undefined) {
+          targetFrameFrom = frame.top - (last.anchorTop - frame.anchorTop);
+        } else if (frame.total === total) {
+          targetFrameFrom = reached;
+        }
+        console.log("last", last, "frame", frame, "targetFrameFrom", targetFrameFrom, "reached", reached);
+        if (backs < 2 && Math.round(targetFrameFrom) !== Math.round(frame.top)) {
+          await scrollPageTo(tab, targetFrameFrom);
           backs++;
           continue;
         }
