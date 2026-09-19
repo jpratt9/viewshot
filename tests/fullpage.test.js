@@ -72,6 +72,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   const shownAt = [];
   let last = PNG;
   const scriptCalls = [];
+  const insertedCSS = [];
   const sent = []; // what the worker told the popup
   let onMessage; // background.js's chrome.runtime.onMessage listener
   let captureTimeout; // CAPTURE_TIMEOUT_MS, read once background.js has loaded
@@ -104,7 +105,17 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
     // A window that is drawing runs the callback; from frozenAt on it never does.
     // The probe for slice k runs before capture k, so captureAt is one short.
     requestAnimationFrame: (cb) => { if (!frozenAt || captureAt.length < frozenAt - 1) cb(); },
-    getComputedStyle: (e) => ({ position: fixed.includes(e) ? (e.pos || 'fixed') : 'static', overflow: e.overflow || 'visible' }),
+    getComputedStyle: (e) => {
+      const inlineSnap = (e.style && e.style.getPropertyValue) ? e.style.getPropertyValue('scroll-snap-type') || 'none' : 'none';
+      const inlineAnchor = (e.style && e.style.getPropertyValue) ? e.style.getPropertyValue('overflow-anchor') || 'auto' : 'auto';
+      const userCss = insertedCSS.join(' ');
+      return {
+        position: fixed.includes(e) ? (e.pos || 'fixed') : 'static',
+        overflow: e.overflow || 'visible',
+        'scroll-snap-type': userCss.includes('scroll-snap-type: none !important') ? 'none' : inlineSnap,
+        'overflow-anchor': userCss.includes('overflow-anchor: auto !important') ? 'auto' : inlineAnchor,
+      };
+    },
     window: {
       innerWidth: iw, innerHeight: ih, devicePixelRatio: dpr,
       // Faithful to the browser: window.scrollTo drives the document scroller.
@@ -116,7 +127,9 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
     createImageBitmap: async () => ({ width: iw * dpr, height: ih * dpr }),
     fetch: async () => ({ blob: async () => ({}) }),
     chrome: {
-      scripting: { insertCSS: async () => {}, removeCSS: async () => {},
+      scripting: {
+        insertCSS: async ({ css }) => { insertedCSS.push(css); },
+        removeCSS: async ({ css }) => { const idx = insertedCSS.indexOf(css); if (idx !== -1) insertedCSS.splice(idx, 1); },
         executeScript: async ({ func, args }) => {
           scriptCalls.push(func.name || 'anon');
           // Chrome awaits a function that returns a promise; the frame report does.
@@ -155,7 +168,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
   vm.runInContext(CODE, context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
-  return { ctx: context, canvases, scriptCalls, captureAt, shownAt, sent, styles, observers, message: (m) => onMessage(m, {}, () => {}) };
+  return { ctx: context, canvases, scriptCalls, captureAt, shownAt, sent, styles, observers, insertedCSS, message: (m) => onMessage(m, {}, () => {}) };
 }
 
 const TAB = { id: 1, windowId: 9 };
@@ -1555,4 +1568,88 @@ test('prunes an element that loses its sticky positioning and restores its visib
   };
   await ctx.captureFullPage(TAB);
   assert.deepStrictEqual(shownAt.map(([v]) => v), ['', '', 'hidden', '', '', '']);
+});
+
+// --- pages that turn scroll anchoring off ----------------------------------
+
+test('turns scroll anchoring on while the page is shot, and back off after', async () => {
+  const { ctx, insertedCSS } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  const rules = [];
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => { rules.push(insertedCSS.join(' ')); return shoot(...a); };
+  await ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(rules, Array(4).fill('* { overflow-anchor: auto !important; scroll-snap-type: none !important; }'), 'shot a slice without the rule');
+  assert.strictEqual(insertedCSS.length, 0, 'left the rule inserted');
+});
+
+test('takes the anchoring rule back out when a slice fails', async () => {
+  const { ctx, insertedCSS } = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1, failAt: 2 });
+  const shoot = ctx.chrome.tabs.captureVisibleTab;
+  let shotWith;
+  ctx.chrome.tabs.captureVisibleTab = async (...a) => { shotWith = insertedCSS.length > 0; return shoot(...a); };
+  await assert.rejects(ctx.captureFullPage(TAB));
+  assert.ok(shotWith, 'shot the slice that failed without the rule');
+  assert.strictEqual(insertedCSS.length, 0, 'left the rule inserted');
+});
+
+test("turns anchoring on over a page's own `!important` in a style attribute, and puts it back after", async () => {
+  const htmlEl = positioned('static');
+  htmlEl.style.setProperty('overflow-anchor', 'none', 'important');
+  const page = load({ de: el(3000, 800), body: el(3000, 3000), ih: 800, dpr: 1 });
+  
+  const shoot = page.ctx.chrome.tabs.captureVisibleTab;
+  const overrides = [];
+  page.ctx.chrome.tabs.captureVisibleTab = async (...a) => {
+    overrides.push(page.ctx.getComputedStyle(htmlEl)['overflow-anchor']);
+    return shoot(...a);
+  };
+  await page.ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(overrides, Array(4).fill('auto'), "did not override the page's own inline anchoring");
+  assert.strictEqual(page.ctx.getComputedStyle(htmlEl)['overflow-anchor'], 'none', "did not restore the page's own inline anchoring");
+});
+
+// --- pages with scroll snapping --------------------------------------------
+
+test('turns scroll snapping off while the page is shot', async () => {
+  const snaps = [0, 500, 1000, 1500, 2000, 2287];
+  const body = el(3000, 713);
+  const htmlEl = positioned('static');
+  const scroll = body.scrollTo;
+  
+  let page;
+  body.scrollTo = function (o) {
+    const snap = page.ctx.getComputedStyle(htmlEl)['scroll-snap-type'];
+    const off = snap === 'none';
+    const top = off ? o.top : snaps.reduce((a, b) => (Math.abs(b - o.top) < Math.abs(a - o.top) ? b : a));
+    scroll.call(this, { ...o, top });
+  };
+  page = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  
+  await page.ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(page.captureAt, [0, 713, 1426, 2139, 2287], 'shot the slices where the snap points pulled them');
+  assert.deepStrictEqual(page.canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
+});
+
+test("turns scroll snapping off over a page's own `!important` in a style attribute, and puts it back after", async () => {
+  const snaps = [0, 500, 1000, 1500, 2000, 2287];
+  const htmlEl = positioned('static'), bodyEl = positioned('static');
+  for (const e of [htmlEl, bodyEl]) e.style.setProperty('scroll-snap-type', 'y mandatory', 'important');
+  const body = el(3000, 713);
+  const scroll = body.scrollTo;
+  
+  let page;
+  body.scrollTo = function (o) {
+    const htmlSnap = page.ctx.getComputedStyle(htmlEl)['scroll-snap-type'];
+    const bodySnap = page.ctx.getComputedStyle(bodyEl)['scroll-snap-type'];
+    const off = htmlSnap === 'none' && bodySnap === 'none';
+    const top = off ? o.top : snaps.reduce((a, b) => (Math.abs(b - o.top) < Math.abs(a - o.top) ? b : a));
+    scroll.call(this, { ...o, top });
+  };
+  page = load({ de: el(713, 713), body, ih: 713, dpr: 1 });
+  
+  await page.ctx.captureFullPage(TAB);
+  assert.deepStrictEqual(page.captureAt, [0, 713, 1426, 2139, 2287], 'shot the slices where the snap points pulled them');
+  assert.deepStrictEqual(page.canvases[0].draws.map((d) => d.y), [0, 713, 1426, 2139, 2287]);
+  assert.strictEqual(page.ctx.getComputedStyle(htmlEl)['scroll-snap-type'], 'y mandatory', "did not restore the page's own inline snapping");
+  assert.strictEqual(page.ctx.getComputedStyle(bodyEl)['scroll-snap-type'], 'y mandatory', "did not restore the page's own inline snapping");
 });
