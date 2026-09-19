@@ -625,8 +625,8 @@ async function captureFullPage(tab, format, popupId) {
           if (await hideStuckSticky(tab)) reshot = true;
         }
         if (i === 0 || shot > 1 || !reshot) {
-          if (frame.top !== reached && frame.total === total) {
-            const shift = frame.top - reached;
+          if (frame.top !== targetFrameFrom) {
+            const shift = frame.top - targetFrameFrom;
             actual += shift;
             landed += shift;
             if (last) last.actual += shift;
