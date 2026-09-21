@@ -23,7 +23,6 @@ function loadRegion(opts = {}) {
   const dpr = 'dpr' in opts ? opts.dpr : 2; // not a destructuring default: `dpr: undefined` is a real case
   const created = [];
   const sent = [];
-  const docListeners = {};
   const winListeners = {};
   const window = {
     __shotRegion: alreadyActive, devicePixelRatio: dpr, innerWidth, innerHeight,
@@ -37,12 +36,6 @@ function loadRegion(opts = {}) {
   const document = {
     documentElement: { appendChild() {} },
     createElement() { const el = makeEl(); created.push(el); return el; },
-    addEventListener(type, fn) { (docListeners[type] = docListeners[type] || []).push(fn); },
-    removeEventListener(type, fn) {
-      const l = docListeners[type] || [];
-      const i = l.indexOf(fn);
-      if (i !== -1) l.splice(i, 1);
-    },
   };
   // Copy out of the vm realm so deepStrictEqual's prototype check passes.
   const chrome = {
@@ -53,12 +46,24 @@ function loadRegion(opts = {}) {
   vm.createContext(context);
   vm.runInContext(CODE, context);
 
-  return { overlay: created[0], sel: created[1], sent, window, docListeners, winListeners, created };
+  return { overlay: created[0], sel: created[1], sent, window, winListeners, created };
 }
 
 const fire = (el, type, ev) => (el.listeners[type] || []).forEach((fn) => fn(ev));
 const down = (x, y, button = 0) => ({ clientX: x, clientY: y, button });
 const up = down;
+
+// A key event records what the handler did to it: a page behind the overlay
+// only ever sees the press if both flags come back false.
+const keyEvent = (type, key = 'Escape') => ({
+  type, key, prevented: false, stopped: false,
+  preventDefault() { this.prevented = true; },
+  stopImmediatePropagation() { this.stopped = true; },
+});
+const press = (winListeners, ev) => {
+  (winListeners[ev.type] || []).slice().forEach((fn) => fn(ev));
+  return ev;
+};
 
 // --- the 2.3MB bug: a mouseup with no matching mousedown ------------------
 // If the drag starts before region.js finishes injecting, the overlay only
@@ -152,10 +157,9 @@ test('a right-click mid-drag does not move the anchor', () => {
 // --- pre-existing behavior that must keep working -------------------------
 
 test('Escape cancels the selection', () => {
-  const { sent, docListeners, overlay } = loadRegion();
-  let prevented = false;
-  docListeners.keydown[0]({ key: 'Escape', preventDefault: () => { prevented = true; } });
-  assert.strictEqual(prevented, true);
+  const { sent, winListeners, overlay } = loadRegion();
+  const ev = press(winListeners, keyEvent('keydown'));
+  assert.strictEqual(ev.prevented, true);
   assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: null }]);
   assert.strictEqual(overlay.removed, true);
 });
@@ -204,10 +208,74 @@ test('the worker can tear the overlay down without sending a rect', () => {
 });
 
 test('a cancelled overlay releases its listeners and its re-injection guard', () => {
-  const { window, docListeners, winListeners } = loadRegion();
+  const { window, winListeners } = loadRegion();
   window.__shotRegionCancel();
-  assert.deepStrictEqual(docListeners.keydown, []);
+  assert.deepStrictEqual(winListeners.keydown, []);
+  assert.deepStrictEqual(winListeners.keyup, []);
   assert.deepStrictEqual(winListeners.blur, []);
   assert.strictEqual(window.__shotRegionCancel, null);
   assert.strictEqual(window.__shotRegion, false, 'a fresh injection must be able to mount');
+});
+
+// --- Escape must not reach the page ---------------------------------------
+// Cancelling used to only preventDefault, so the same press ran on to the
+// page's own handlers: it closed their modal or exited their video player at
+// the same time as it dismissed the overlay.
+
+test('the page never sees the Escape that cancels the overlay', () => {
+  const { winListeners } = loadRegion();
+  const ev = press(winListeners, keyEvent('keydown'));
+  assert.strictEqual(ev.stopped, true, 'the press must not run on to page handlers');
+  assert.strictEqual(ev.prevented, true);
+});
+
+test('swallows the keyup that ends the cancelling press', () => {
+  const { winListeners, sent } = loadRegion();
+  press(winListeners, keyEvent('keydown'));
+  const ev = press(winListeners, keyEvent('keyup'));
+  assert.strictEqual(ev.stopped, true, 'pages that bind Escape to keyup would fire otherwise');
+  assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: null }], 'still one cancel');
+});
+
+test('releases the key listeners once the cancelling press ends', () => {
+  const { winListeners } = loadRegion();
+  press(winListeners, keyEvent('keydown'));
+  press(winListeners, keyEvent('keyup'));
+  assert.deepStrictEqual(winListeners.keydown, []);
+  assert.deepStrictEqual(winListeners.keyup, []);
+  assert.deepStrictEqual(winListeners.blur, [], 'the keyup backstop goes too');
+});
+
+test('losing focus releases a swallow still waiting on its keyup', () => {
+  const { winListeners } = loadRegion();
+  press(winListeners, keyEvent('keydown'));
+  winListeners.blur[0](); // the keyup landed in whatever took focus
+  assert.deepStrictEqual(winListeners.keydown, [], 'Escape must not stay swallowed for good');
+  assert.deepStrictEqual(winListeners.keyup, []);
+});
+
+test('a held Escape cancels once, not once per repeat', () => {
+  const { winListeners, sent } = loadRegion();
+  press(winListeners, keyEvent('keydown'));
+  press(winListeners, keyEvent('keydown')); // auto-repeat while the key is down
+  press(winListeners, keyEvent('keyup'));
+  assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: null }]);
+});
+
+test('a stray Escape keyup is swallowed without disarming the overlay', () => {
+  const { winListeners, sent } = loadRegion(); // key went down before injection
+  const upEv = press(winListeners, keyEvent('keyup'));
+  assert.strictEqual(upEv.stopped, true);
+  assert.deepStrictEqual(sent, [], 'a keyup alone is not a cancel');
+  press(winListeners, keyEvent('keydown'));
+  assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: null }], 'Escape still works');
+});
+
+test('keys other than Escape pass through to the page', () => {
+  const { winListeners, sent, overlay } = loadRegion();
+  const ev = press(winListeners, keyEvent('keydown', 'a'));
+  assert.strictEqual(ev.prevented, false);
+  assert.strictEqual(ev.stopped, false);
+  assert.deepStrictEqual(sent, []);
+  assert.strictEqual(overlay.removed, false);
 });
