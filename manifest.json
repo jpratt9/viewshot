@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ViewShot",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "One-click screenshots: visible area, full page, or region. PNG/JPG/WebP, or record to WebM/MP4/GIF. 100% local, no tracking.",
   "permissions": ["activeTab", "downloads", "scripting", "storage", "offscreen", "tabCapture", "clipboardWrite"],
   "action": {
