@@ -927,7 +927,7 @@ async function cancelRegion(tab) {
 }
 
 async function captureRegion(tab) {
-  await scriptWithTimeout({ target: { tabId: tab.id }, files: ['region.js'] }, CAPTURE_SCRIPT_TIMEOUT_MS);
+  await scriptWithTimeout({ target: { tabId: tab.id }, files: ['src/content/region.js'] }, CAPTURE_SCRIPT_TIMEOUT_MS);
 }
 
 // ---- offscreen document (shared by clipboard + recording; only one allowed) ----
@@ -943,7 +943,7 @@ async function ensureOffscreen() {
     // while the new listener loads, it cannot answer getRec's identity check.
     await getRec();
     await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
+      url: 'src/offscreen/offscreen.html',
       reasons: ['CLIPBOARD', 'USER_MEDIA'],
       justification: 'Write screenshots to the clipboard and record the tab to video',
     });

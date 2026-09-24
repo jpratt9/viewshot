@@ -33,7 +33,7 @@ test('the notice names the gif.js release and files that are actually vendored',
   const covered = [...notices.matchAll(/^Files in this extension: (.+)$/gm)].flatMap((m) => m[1].split(/,\s*/));
   for (const f of ['gif.js', 'gif.worker.js']) {
     assert.ok(covered.includes(f), `${f} is vendored but no section of the notice covers it`);
-    assert.strictEqual(read(f).split('\n')[0], `// ${f} ${release} - https://github.com/jnordberg/gif.js`,
+    assert.strictEqual(read(`src/vendor/${f}`).split('\n')[0], `// ${f} ${release} - https://github.com/jnordberg/gif.js`,
       `${f} is not the gif.js ${release} the notice describes`);
   }
 });
@@ -45,7 +45,7 @@ test('the notice names the gif.js release and files that are actually vendored',
 // carries it instead.
 
 test('the notices file carries Dekker\'s NeuQuant notice for gif.worker.js', () => {
-  const worker = read('gif.worker.js');
+  const worker = read('src/vendor/gif.worker.js');
   assert.ok(worker.includes('"./TypedNeuQuant.js"'),
     'gif.worker.js no longer bundles TypedNeuQuant.js, so the NeuQuant section is stale');
   const release = notices.match(/^NeuQuant - bundled as TypedNeuQuant\.js in gif\.js (\S+)\nFiles in this extension: gif\.worker\.js$/m)?.[1];

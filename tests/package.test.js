@@ -21,8 +21,13 @@ test('npm run package rebuilds viewshot.zip from files that exist', () => {
 
 test('the zip holds exactly the files the extension loads, plus its license notices', () => {
   const needed = new Set(['manifest.json', 'LICENSE', 'THIRD_PARTY_NOTICES.txt']);
-  for (const f of zipped.filter((f) => /\.(json|html|css|js)$/.test(f))) {
-    for (const [, ref] of read(f).matchAll(/["']([\w.-]+\.(?:html|css|js|png))["']/g)) needed.add(ref);
+  // A page resolves src and href against its own folder; the manifest and the
+  // chrome.* APIs resolve paths against the extension root. The vendored gif.js
+  // files are skipped: their strings are the library's own defaults and bundled
+  // module names, not files the extension loads.
+  for (const f of zipped.filter((f) => /\.(json|html|css|js)$/.test(f) && !f.startsWith('src/vendor/'))) {
+    const dir = f.endsWith('.html') ? path.posix.dirname(f) : '';
+    for (const [, ref] of read(f).matchAll(/["']([\w./-]+\.(?:html|css|js|png))["']/g)) needed.add(path.posix.join(dir, ref));
   }
   assert.deepStrictEqual([...zipped].sort(), [...needed].sort());
 });

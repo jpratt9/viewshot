@@ -8,7 +8,7 @@ const vm = require('node:vm');
 // listener registrations don't throw, then pull out the real buildName().
 // (chrome.* APIs are fully mocked — no extension/runtime is touched.)
 function loadBackground() {
-  const code = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src/background/background.js'), 'utf8');
   const deep = () => new Proxy(function () {}, { get: () => deep(), apply: () => undefined });
   const context = { chrome: deep(), console, URL, btoa, setTimeout, clearTimeout, Date };
   vm.createContext(context);

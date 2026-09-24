@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const CODE = fs.readFileSync(path.join(__dirname, '..', 'region.js'), 'utf8');
+const CODE = fs.readFileSync(path.join(__dirname, '..', 'src/content/region.js'), 'utf8');
 
 // Minimal DOM/chrome stand-ins so region.js's IIFE can run headless. Only the
 // handful of APIs it actually touches are implemented; nothing real is used.

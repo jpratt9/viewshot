@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const CODE = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+const CODE = fs.readFileSync(path.join(__dirname, '..', 'src/background/background.js'), 'utf8');
 const PNG = 'data:image/png;base64,AAAA';
 
 // The page's HTMLElement. chrome.dom.openOrClosedShadowRoot takes one of these

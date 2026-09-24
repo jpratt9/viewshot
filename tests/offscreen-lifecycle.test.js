@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const CODE = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+const CODE = fs.readFileSync(path.join(__dirname, '..', 'src/background/background.js'), 'utf8');
 
 // background.js with a chrome.offscreen mock that tracks document lifetime.
 // The document is the thing under test: it shares a renderer main thread with

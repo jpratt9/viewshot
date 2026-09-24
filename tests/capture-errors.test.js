@@ -118,7 +118,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
     }
   };
   vm.createContext(context);
-  vm.runInContext(read('background.js'), context);
+  vm.runInContext(read('src/background/background.js'), context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   scriptTimeout = vm.runInContext('SCRIPT_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
@@ -358,7 +358,7 @@ function loadPopup(url, { fileAccess = true, streamIdFails = false, store = {}, 
     }
   };
   vm.createContext(context);
-  vm.runInContext(read('popup.js'), context);
+  vm.runInContext(read('src/popup/popup.js'), context);
   const btn = (mode) => modes.find((b) => b.dataset.mode === mode);
   return {
     ctx: context, els, sent, btn, writes, streams, scripts,
@@ -632,7 +632,7 @@ function loadOffscreen() {
     }
   };
   vm.createContext(context);
-  vm.runInContext(read('offscreen.js'), context);
+  vm.runInContext(read('src/offscreen/offscreen.js'), context);
   // download() writes through an <a>, so keep each Blob on its way through.
   vm.runInContext('download = ((real) => (blob, name) => { __downloads.push([blob, name]); real(blob, name); })(download);', Object.assign(context, { __downloads: downloads }));
   return {

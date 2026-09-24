@@ -63,7 +63,7 @@ function loadBg({ scriptFails = false } = {}) {
     fetch: async () => ({ blob: async () => ({}) }),
   };
   vm.createContext(context);
-  vm.runInContext(read('background.js'), context);
+  vm.runInContext(read('src/background/background.js'), context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
 
@@ -122,7 +122,7 @@ test('starting another capture settles the abandoned selection as a cancel', asy
   const { ctx, order } = loadBg();
   await ctx.runCapture('region', OPTS);
   await settle();
-  assert.ok(order.includes('inject:region.js'));
+  assert.ok(order.includes('inject:src/content/region.js'));
   await ctx.runCapture('visible', OPTS);
   await settle();
   assert.ok(order.indexOf('cancel') !== -1, 'it must be cancelled');
@@ -157,7 +157,7 @@ test('a second Region click gets a fresh overlay rather than the stale guard', a
   await settle();
   await ctx.runCapture('region', OPTS);
   await settle();
-  assert.ok(order.indexOf('cancel') < order.lastIndexOf('inject:region.js'), 'torn down before re-injecting');
+  assert.ok(order.indexOf('cancel') < order.lastIndexOf('inject:src/content/region.js'), 'torn down before re-injecting');
   dispatch({ type: 'shot-region', rect: { x: 10, y: 20, w: 100, h: 80, dpr: 2 } });
   await settle();
   assert.strictEqual(downloads.length, 1);
@@ -200,7 +200,7 @@ function loadPopup() {
     localStorage: { getItem: () => null, setItem: () => {} },
   };
   vm.createContext(context);
-  vm.runInContext(read('popup.js'), context);
+  vm.runInContext(read('src/popup/popup.js'), context);
   const click = async (mode) => {
     const btn = modes.find((m) => m.dataset.mode === mode);
     await Promise.all(btn.listeners.click.map((f) => f()));

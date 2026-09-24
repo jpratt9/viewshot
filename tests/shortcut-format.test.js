@@ -50,7 +50,7 @@ async function pressShortcut(command, format) {
     fetch: async () => ({ blob: async () => ({}) }),
   };
   vm.createContext(context);
-  vm.runInContext(read('background.js'), context);
+  vm.runInContext(read('src/background/background.js'), context);
   captureTimeout = vm.runInContext('CAPTURE_TIMEOUT_MS', context);
   pageScriptTimeout = vm.runInContext('CAPTURE_SCRIPT_TIMEOUT_MS', context);
   await onCommand(command);
@@ -97,7 +97,7 @@ function recordingBrowser(format = 'webm', storedRec = null, saved = {}) {
     action: { setBadgeText: async ({ text }) => calls.badges.push(text), setBadgeBackgroundColor: async () => {} },
   };
   const ctx = vm.createContext({ chrome, console: { log() {}, warn() {}, error() {} }, setTimeout() {}, Date, URL });
-  vm.runInContext(read('background.js'), ctx);
+  vm.runInContext(read('src/background/background.js'), ctx);
   ctx.ensureOffscreen = async () => { hasDoc = true; };
   ctx.blipRecordingIndicator = async () => 0;
   ctx.getViewport = async () => ({ width: 1280, height: 720 });

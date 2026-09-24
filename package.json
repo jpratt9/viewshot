@@ -1,10 +1,10 @@
 {
   "name": "viewshot",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "ViewShot — Manifest V3 screenshot & tab-recording extension",
   "private": true,
   "scripts": {
     "test": "node --test",
-    "package": "rm -f viewshot.zip && zip -X -MM viewshot.zip manifest.json background.js popup.html popup.css popup.js region.js offscreen.html offscreen.js gif.js gif.worker.js icon16.png icon32.png icon48.png icon128.png LICENSE THIRD_PARTY_NOTICES.txt"
+    "package": "rm -f viewshot.zip && zip -X -MM viewshot.zip manifest.json src/background/background.js src/popup/popup.html src/popup/popup.css src/popup/popup.js src/content/region.js src/offscreen/offscreen.html src/offscreen/offscreen.js src/vendor/gif.js src/vendor/gif.worker.js icons/icon16.png icons/icon32.png icons/icon48.png icons/icon128.png LICENSE THIRD_PARTY_NOTICES.txt"
   }
 }

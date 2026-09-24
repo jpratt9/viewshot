@@ -13,7 +13,7 @@ function loadBackground() {
   const deep = () => new Proxy(function () {}, { get: () => deep(), apply: () => undefined });
   const context = { chrome: deep(), console, URL, btoa, setTimeout, clearTimeout, Date };
   vm.createContext(context);
-  vm.runInContext(read('background.js'), context);
+  vm.runInContext(read('src/background/background.js'), context);
   // `const DEFAULTS` lives in the context's lexical scope, not on the context
   // object, so it has to be evaluated out. Spread it into a plain object of this
   // realm so deepStrictEqual's prototype check can pass.
@@ -72,7 +72,7 @@ function bootPopup(store = {}, cache = null, pending = {}) {
   };
   const context = { document, chrome, console, Math, parseFloat, JSON, localStorage, crypto };
   vm.createContext(context);
-  vm.runInContext(read('popup.js'), context);
+  vm.runInContext(read('src/popup/popup.js'), context);
   return {
     ...context, els, store, mirror, storageGets,
     // const/let live in the context's lexical scope, not on the context object.
@@ -91,7 +91,7 @@ async function loadPopup(store = {}, cache = null) {
 // Still-image formats offered in the UI, straight from the markup so the test
 // tracks the real options rather than a hand-copied list.
 function stillFormatsFromMarkup() {
-  const opts = [...read('popup.html').matchAll(/<option value="([^"]+)">([^<]*)</g)];
+  const opts = [...read('src/popup/popup.html').matchAll(/<option value="([^"]+)">([^<]*)</g)];
   return opts.map(([, v, label]) => ({ value: v, label }))
     .filter((o) => !/record/i.test(o.label))
     .map((o) => o.value);
@@ -129,7 +129,7 @@ test('the default quality is in range for the lossy default format', () => {
 });
 
 test('the Quality slider can represent the default without snapping', () => {
-  const input = read('popup.html').match(/<input\b[^>]*\bid="quality"[^>]*>/)[0];
+  const input = read('src/popup/popup.html').match(/<input\b[^>]*\bid="quality"[^>]*>/)[0];
   const attribute = (name) => Number(input.match(new RegExp(`\\b${name}="([^"]+)"`))[1]);
   const min = attribute('min');
   const max = attribute('max');

@@ -81,7 +81,7 @@ function loadPopup(store = { opts: { format: 'jpg' } }) {
     window: { close: () => { closed = true; } },
   };
   vm.createContext(context);
-  vm.runInContext(read('popup.js'), context);
+  vm.runInContext(read('src/popup/popup.js'), context);
 
   return {
     els, sent, ack: settleAck, checks: () => checks,
@@ -159,7 +159,7 @@ function loadBackground() {
     setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
   };
   vm.createContext(context);
-  vm.runInContext(read('background.js'), context);
+  vm.runInContext(read('src/background/background.js'), context);
   return { listener, queries };
 }
 

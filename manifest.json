@@ -1,16 +1,16 @@
 {
   "manifest_version": 3,
   "name": "ViewShot",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "One-click screenshots: visible area, full page, or region. PNG/JPG/WebP, or record to WebM/MP4/GIF. 100% local, no tracking.",
   "permissions": ["activeTab", "downloads", "scripting", "storage", "offscreen", "tabCapture", "clipboardWrite"],
   "action": {
-    "default_popup": "popup.html",
+    "default_popup": "src/popup/popup.html",
     "default_title": "ViewShot — screenshot this tab",
-    "default_icon": { "16": "icon16.png", "32": "icon32.png", "48": "icon48.png", "128": "icon128.png" }
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
   },
-  "icons": { "16": "icon16.png", "32": "icon32.png", "48": "icon48.png", "128": "icon128.png" },
-  "background": { "service_worker": "background.js" },
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "background": { "service_worker": "src/background/background.js" },
   "commands": {
     "capture-visible": {
       "suggested_key": { "default": "Alt+Shift+V" },

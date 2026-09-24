@@ -140,7 +140,7 @@ async function startRecording(streamId, format, width, height, cssPx, audio) {
     // Chrome will use a CPU-backed canvas instead of GPU (faster for readback).
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-    rec.gif = new GIF({ workers: 2, quality: 10, width: w, height: h, workerScript: chrome.runtime.getURL('gif.worker.js') });
+    rec.gif = new GIF({ workers: 2, quality: 10, width: w, height: h, workerScript: chrome.runtime.getURL('src/vendor/gif.worker.js') });
     rec.frames = 0;
     const delay = Math.round(1000 / GIF_FPS);
     // Held locally as well as on `rec` so the tick can always cancel itself,
