@@ -1,6 +1,6 @@
 {
   "name": "viewshot",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "ViewShot — Manifest V3 screenshot & tab-recording extension",
   "private": true,
   "scripts": {

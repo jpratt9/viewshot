@@ -19,7 +19,7 @@ function makeEl() {
 }
 
 function loadRegion(opts = {}) {
-  const { innerWidth = 1512, innerHeight = 850, alreadyActive = false } = opts;
+  const { innerWidth = 1512, innerHeight = 850, alreadyActive = false, holdTimers = false } = opts;
   const dpr = 'dpr' in opts ? opts.dpr : 2; // not a destructuring default: `dpr: undefined` is a real case
   const created = [];
   const sent = [];
@@ -42,16 +42,28 @@ function loadRegion(opts = {}) {
     runtime: { sendMessage: (m) => sent.push({ type: m.type, rect: m.rect ? { ...m.rect } : m.rect }) },
   };
 
-  const context = { window, document, chrome };
+  const timers = [];
+  const setTimeout = (fn) => (holdTimers ? timers.push(fn) : fn());
+  const context = { window, document, chrome, setTimeout };
   vm.createContext(context);
   vm.runInContext(CODE, context);
 
-  return { overlay: created[0], sel: created[1], sent, window, winListeners, created };
+  // Mouse events arrive through window capture, the way the page would see
+  // them, aimed at the overlay unless a test says otherwise.
+  const fire = (type, ev, target = created[0]) => press(winListeners, mouseEvent(type, ev, target));
+  const flushTimers = () => timers.splice(0).forEach((fn) => fn());
+  return { overlay: created[0], sel: created[1], sent, window, winListeners, created, fire, flushTimers };
 }
 
-const fire = (el, type, ev) => (el.listeners[type] || []).forEach((fn) => fn(ev));
 const down = (x, y, button = 0) => ({ clientX: x, clientY: y, button });
 const up = down;
+// Like keyEvent below: a page listener only ever sees the event if `stopped`
+// comes back false.
+const mouseEvent = (type, { clientX = 0, clientY = 0, button = 0 } = {}, target) => ({
+  type, clientX, clientY, button, target, prevented: false, stopped: false,
+  preventDefault() { this.prevented = true; },
+  stopImmediatePropagation() { this.stopped = true; },
+});
 
 // A key event records what the handler did to it: a page behind the overlay
 // only ever sees the press if both flags come back false.
@@ -71,51 +83,51 @@ const press = (winListeners, ev) => {
 // (0,0)-to-cursor — near-viewport-sized — instead of nothing.
 
 test('ignores a mouseup that had no mousedown on the overlay', () => {
-  const { overlay, sent } = loadRegion();
-  fire(overlay, 'mouseup', up(1200, 700));
+  const { fire, sent } = loadRegion();
+  fire('mouseup', up(1200, 700));
   assert.deepStrictEqual(sent, [], 'no capture should be requested');
 });
 
 test('leaves the overlay up after a stray mouseup so the user can retry', () => {
-  const { overlay, sel } = loadRegion();
-  fire(overlay, 'mouseup', up(1200, 700));
+  const { fire, overlay, sel } = loadRegion();
+  fire('mouseup', up(1200, 700));
   assert.strictEqual(overlay.removed, false);
   assert.strictEqual(sel.removed, false);
 });
 
 test('a stray mousemove does not draw the selection box', () => {
-  const { overlay, sel } = loadRegion();
-  fire(overlay, 'mousemove', down(400, 300));
+  const { fire, sel } = loadRegion();
+  fire('mousemove', down(400, 300));
   assert.strictEqual(sel.style.left, undefined);
 });
 
 // --- normal drags ---------------------------------------------------------
 
 test('reports the dragged rect with the page devicePixelRatio', () => {
-  const { overlay, sent } = loadRegion({ dpr: 2 });
-  fire(overlay, 'mousedown', down(100, 120));
-  fire(overlay, 'mouseup', up(300, 270));
+  const { fire, sent } = loadRegion({ dpr: 2 });
+  fire('mousedown', down(100, 120));
+  fire('mouseup', up(300, 270));
   assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: { x: 100, y: 120, w: 200, h: 150, dpr: 2 } }]);
 });
 
 test('normalizes a drag made up-and-to-the-left', () => {
-  const { overlay, sent } = loadRegion({ dpr: 1 });
-  fire(overlay, 'mousedown', down(300, 270));
-  fire(overlay, 'mouseup', up(100, 120));
+  const { fire, sent } = loadRegion({ dpr: 1 });
+  fire('mousedown', down(300, 270));
+  fire('mouseup', up(100, 120));
   assert.deepStrictEqual(sent[0].rect, { x: 100, y: 120, w: 200, h: 150, dpr: 1 });
 });
 
 test('cancels a drag smaller than the 5px threshold', () => {
-  const { overlay, sent } = loadRegion();
-  fire(overlay, 'mousedown', down(100, 100));
-  fire(overlay, 'mouseup', up(103, 102));
+  const { fire, sent } = loadRegion();
+  fire('mousedown', down(100, 100));
+  fire('mouseup', up(103, 102));
   assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: null }]);
 });
 
 test('tears the overlay down once a drag completes', () => {
-  const { overlay, sel, window } = loadRegion();
-  fire(overlay, 'mousedown', down(100, 100));
-  fire(overlay, 'mouseup', up(300, 300));
+  const { fire, overlay, sel, window } = loadRegion();
+  fire('mousedown', down(100, 100));
+  fire('mouseup', up(300, 300));
   assert.strictEqual(overlay.removed, true);
   assert.strictEqual(sel.removed, true);
   assert.strictEqual(window.__shotRegion, false);
@@ -124,33 +136,33 @@ test('tears the overlay down once a drag completes', () => {
 // --- clamping: the overlay keeps pointer capture past the window edge ------
 
 test('clamps a drag that runs off the top-left to the viewport origin', () => {
-  const { overlay, sent } = loadRegion({ innerWidth: 1512, innerHeight: 850 });
-  fire(overlay, 'mousedown', down(100, 100));
-  fire(overlay, 'mouseup', up(-500, -400)); // released outside the window
+  const { fire, sent } = loadRegion({ innerWidth: 1512, innerHeight: 850 });
+  fire('mousedown', down(100, 100));
+  fire('mouseup', up(-500, -400)); // released outside the window
   assert.deepStrictEqual(sent[0].rect, { x: 0, y: 0, w: 100, h: 100, dpr: 2 });
 });
 
 test('clamps a drag that runs off the bottom-right to the viewport edge', () => {
-  const { overlay, sent } = loadRegion({ innerWidth: 1512, innerHeight: 850 });
-  fire(overlay, 'mousedown', down(1400, 800));
-  fire(overlay, 'mouseup', up(2000, 1200));
+  const { fire, sent } = loadRegion({ innerWidth: 1512, innerHeight: 850 });
+  fire('mousedown', down(1400, 800));
+  fire('mouseup', up(2000, 1200));
   assert.deepStrictEqual(sent[0].rect, { x: 1400, y: 800, w: 112, h: 50, dpr: 2 });
 });
 
 // --- non-primary buttons --------------------------------------------------
 
 test('a right-click does not arm the selection anchor', () => {
-  const { overlay, sent } = loadRegion();
-  fire(overlay, 'mousedown', down(900, 600, 2));
-  fire(overlay, 'mouseup', up(1200, 700, 2));
+  const { fire, sent } = loadRegion();
+  fire('mousedown', down(900, 600, 2));
+  fire('mouseup', up(1200, 700, 2));
   assert.deepStrictEqual(sent, []);
 });
 
 test('a right-click mid-drag does not move the anchor', () => {
-  const { overlay, sent } = loadRegion({ dpr: 1 });
-  fire(overlay, 'mousedown', down(100, 100));
-  fire(overlay, 'mousedown', down(900, 600, 2));
-  fire(overlay, 'mouseup', up(300, 300));
+  const { fire, sent } = loadRegion({ dpr: 1 });
+  fire('mousedown', down(100, 100));
+  fire('mousedown', down(900, 600, 2));
+  fire('mouseup', up(300, 300));
   assert.deepStrictEqual(sent[0].rect, { x: 100, y: 100, w: 200, h: 200, dpr: 1 });
 });
 
@@ -170,9 +182,9 @@ test('re-injection while an overlay is already active is a no-op', () => {
 });
 
 test('falls back to dpr 1 when devicePixelRatio is unset', () => {
-  const { overlay, sent } = loadRegion({ dpr: undefined });
-  fire(overlay, 'mousedown', down(10, 10));
-  fire(overlay, 'mouseup', up(110, 110));
+  const { fire, sent } = loadRegion({ dpr: undefined });
+  fire('mousedown', down(10, 10));
+  fire('mouseup', up(110, 110));
   assert.strictEqual(sent[0].rect.dpr, 1);
 });
 
@@ -190,10 +202,10 @@ test('losing page focus cancels an idle selection', () => {
 });
 
 test('losing focus mid-drag does not cancel', () => {
-  const { overlay, sent, winListeners } = loadRegion({ dpr: 1 });
-  fire(overlay, 'mousedown', down(100, 100));
+  const { fire, sent, winListeners } = loadRegion({ dpr: 1 });
+  fire('mousedown', down(100, 100));
   winListeners.blur[0](); // dragging past the window edge blurs on some platforms
-  fire(overlay, 'mouseup', up(300, 300));
+  fire('mouseup', up(300, 300));
   assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: { x: 100, y: 100, w: 200, h: 200, dpr: 1 } }]);
 });
 
@@ -213,6 +225,8 @@ test('a cancelled overlay releases its listeners and its re-injection guard', ()
   assert.deepStrictEqual(winListeners.keydown, []);
   assert.deepStrictEqual(winListeners.keyup, []);
   assert.deepStrictEqual(winListeners.blur, []);
+  assert.deepStrictEqual(winListeners.mousedown, []);
+  assert.deepStrictEqual(winListeners.click, []);
   assert.strictEqual(window.__shotRegionCancel, null);
   assert.strictEqual(window.__shotRegion, false, 'a fresh injection must be able to mount');
 });
@@ -278,4 +292,48 @@ test('keys other than Escape pass through to the page', () => {
   assert.strictEqual(ev.stopped, false);
   assert.deepStrictEqual(sent, []);
   assert.strictEqual(overlay.removed, false);
+});
+
+// --- the drag must not reach the page either --------------------------------
+// The overlay sits outside the page's open modal, so its mousedown and click
+// bubbled up to the page's click-outside handler, which closed the modal
+// before the shot was taken.
+
+const DRAG = ['pointerdown', 'mousedown', 'pointermove', 'mousemove', 'pointerup', 'mouseup', 'click'];
+
+test('the page never sees any part of the drag', () => {
+  const { fire } = loadRegion({ holdTimers: true }); // the click comes after the mouseup's teardown
+  const evs = DRAG.map((type) => fire(type, type.includes('down') ? down(100, 100) : up(300, 300)));
+  for (const ev of evs) assert.strictEqual(ev.stopped, true, `${ev.type} must not run on to page handlers`);
+});
+
+test('the press does not pull focus out of the page\'s modal', () => {
+  const { fire } = loadRegion();
+  assert.strictEqual(fire('mousedown', down(100, 100)).prevented, true);
+});
+
+test('swallows the click that follows the finishing mouseup', () => {
+  const { fire, sent, window } = loadRegion({ dpr: 1, holdTimers: true });
+  fire('mousedown', down(100, 100));
+  fire('mouseup', up(300, 300));
+  // The overlay is already gone, so the click lands on whatever was under it.
+  const click = fire('click', up(300, 300), window);
+  assert.strictEqual(click.stopped, true);
+  assert.deepStrictEqual(sent, [{ type: 'shot-region', rect: { x: 100, y: 100, w: 200, h: 200, dpr: 1 } }], 'still one shot');
+});
+
+test('hands the mouse back to the page once the press has finished', () => {
+  const { fire, flushTimers, winListeners } = loadRegion({ holdTimers: true });
+  fire('mousedown', down(100, 100));
+  fire('mouseup', up(300, 300));
+  flushTimers();
+  for (const type of DRAG) assert.deepStrictEqual(winListeners[type], [], `${type} must not stay swallowed for good`);
+});
+
+test('a press that is not on the overlay does not arm the anchor', () => {
+  const { fire, sent, window } = loadRegion();
+  const ev = fire('mousedown', down(900, 600), window); // e.g. the page's own scrollbar
+  assert.strictEqual(ev.stopped, true, 'still kept from the page');
+  fire('mouseup', up(1200, 700));
+  assert.deepStrictEqual(sent, []);
 });
