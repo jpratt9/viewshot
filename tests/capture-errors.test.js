@@ -68,7 +68,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
         return [{ result: o.func ? o.func.apply(null, o.args || []) : undefined }];
       },
     },
-    downloads: { download: async () => {} },
+    downloads: { download: async () => {}, onDeterminingFilename: { addListener() {} } },
     storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
     action: {
       setBadgeText: async ({ text }) => { if (text) badges.push(text); },

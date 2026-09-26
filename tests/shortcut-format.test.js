@@ -35,7 +35,7 @@ async function pressShortcut(command, format) {
       captureVisibleTab: async () => 'data:image/png;base64,AAAA',
     },
     scripting: { insertCSS: async () => {}, removeCSS: async () => {}, executeScript: async () => [{}] },
-    downloads: { download: async (o) => { downloads.push(o); } },
+    downloads: { download: async (o) => { downloads.push(o); }, onDeterminingFilename: { addListener() {} } },
     storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({ opts: { format, filename: 'shot' } }) } },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };
@@ -86,6 +86,7 @@ function recordingBrowser(format = 'webm', storedRec = null, saved = {}) {
       sendMessage: async (m) => { calls.sent.push(m); return m.type === 'offscreen-id' ? 'doc' : 'pong'; },
     },
     commands: { onCommand: { addListener(fn) { onCommand = fn; } } },
+    downloads: { onDeterminingFilename: { addListener() {} } },
     storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: {
       get: async (key) => key === 'rec' ? { rec } : { opts: { format, filename: 'recording', ...saved } },
       set: async (v) => { if ('rec' in v) rec = v.rec; },

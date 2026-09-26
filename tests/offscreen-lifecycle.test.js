@@ -36,6 +36,7 @@ function load({ hasDoc = false, rec = null, createRejects = false, docId = null 
       },
     },
     commands: { onCommand: { addListener() {} } },
+    downloads: { onDeterminingFilename: { addListener() {} } },
     offscreen: {
       hasDocument: async () => docExists,
       createDocument: async () => {

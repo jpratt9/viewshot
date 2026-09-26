@@ -49,3 +49,67 @@ test('truncates very long titles to 60 chars', () => {
   const name = buildName('{title}', 'png', { url: 'https://a.com', title: longTitle });
   assert.strictEqual(name, 'a'.repeat(60) + '.png');
 });
+
+// --- Chrome naming the file -------------------------------------------------
+// With another extension's onDeterminingFilename listener installed, Chrome
+// dropped downloads.download's filename and saved every shot as download.jpg.
+
+function loadSaving({ downloadFails = false } = {}) {
+  const code = fs.readFileSync(path.join(__dirname, '..', 'src/background/background.js'), 'utf8');
+  const deep = () => new Proxy(function () {}, { get: () => deep(), apply: () => undefined });
+  let determine;
+  const started = [];
+  const downloads = {
+    onDeterminingFilename: { addListener: (fn) => { determine = fn; } },
+    download: async (o) => { started.push({ ...o }); if (downloadFails) throw new Error('Invalid filename'); },
+  };
+  class FakeCanvas {
+    constructor(w, h) { this.width = w; this.height = h; }
+    getContext() { return { drawImage() {}, fillStyle: '', fillRect() {} }; }
+    async convertToBlob({ type }) { return { type, arrayBuffer: async () => new Uint8Array([1]).buffer }; }
+  }
+  const context = {
+    chrome: new Proxy({ downloads }, { get: (t, k) => (k in t ? t[k] : deep()) }),
+    console, URL, btoa, setTimeout, clearTimeout, Date,
+    OffscreenCanvas: FakeCanvas,
+    createImageBitmap: async () => ({ width: 100, height: 100 }),
+    fetch: async () => ({ blob: async () => ({}) }),
+  };
+  vm.createContext(context);
+  vm.runInContext(code, context);
+  // What Chrome is told to call a download at `url`: undefined is "decide
+  // yourself", 'unanswered' means the listener left Chrome waiting.
+  const named = (url) => {
+    let out = 'unanswered';
+    determine({ url }, (s) => { out = s && { ...s }; });
+    return out;
+  };
+  return { ctx: context, started, named };
+}
+
+const OPTS = { format: 'jpg', quality: 0.92, filename: 'shot-{title}', toClipboard: false };
+const TAB = { url: 'https://a.com', title: 'Page' };
+
+test('names its own shot in the step Chrome actually goes by', async () => {
+  const { ctx, started, named } = loadSaving();
+  await ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB);
+  assert.deepStrictEqual(named(started[0].url), { filename: 'shot-Page.jpg' });
+});
+
+test('leaves every other download for Chrome to name', () => {
+  const { named } = loadSaving();
+  assert.strictEqual(named('https://example.com/file.zip'), undefined);
+});
+
+test('a shot is named once, and not held onto afterwards', async () => {
+  const { ctx, started, named } = loadSaving();
+  await ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB);
+  named(started[0].url);
+  assert.strictEqual(named(started[0].url), undefined);
+});
+
+test('a download that never starts is not left waiting for a name', async () => {
+  const { ctx, started, named } = loadSaving({ downloadFails: true });
+  await assert.rejects(() => ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB));
+  assert.strictEqual(named(started[0].url), undefined);
+});

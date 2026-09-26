@@ -1271,11 +1271,31 @@ async function blobToDataURL(blob) {
   return `data:${blob.type};base64,${btoa(bin)}`;
 }
 
+// Chrome can drop downloads.download's filename and name a data: URL
+// "download.jpg" instead: another extension's onDeterminingFilename listener
+// outranks it (crbug.com/579563). A suggestion made here is what Chrome goes
+// by, so each shot is named here too, matched on its URL. Every other download
+// is left to Chrome.
+const pendingNames = new Map();
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  const filename = pendingNames.get(item.url);
+  if (!filename) { suggest(); return; }
+  pendingNames.delete(item.url);
+  suggest({ filename });
+});
+
 async function saveCapture(png, opts, tab) {
   if (opts.toClipboard) {
     await copyImage(png, tab?.id);
   } else {
     const { dataUrl, ext } = await encode(png, opts);
-    await chrome.downloads.download({ url: dataUrl, filename: buildName(opts.filename, ext, tab), saveAs: false });
+    const filename = buildName(opts.filename, ext, tab);
+    pendingNames.set(dataUrl, filename);
+    try {
+      await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+    } catch (e) {
+      pendingNames.delete(dataUrl); // it never started, so it will never be named
+      throw e;
+    }
   }
 }

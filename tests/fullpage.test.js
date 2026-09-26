@@ -154,6 +154,7 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
       },
       runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, sendMessage: async (m) => { sent.push({ ...m }); } }, // copy out of the vm realm
       commands: { onCommand: { addListener() {} } },
+      downloads: { onDeterminingFilename: { addListener() {} } },
       action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
       storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
       dom: {
