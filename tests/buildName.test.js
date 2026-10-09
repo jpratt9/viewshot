@@ -96,6 +96,19 @@ test('names its own shot in the step Chrome actually goes by', async () => {
   assert.deepStrictEqual(named(started[0].url), { filename: 'shot-Page.jpg' });
 });
 
+test('finds its shot from the cut-down URL Chrome hands the listener', async () => {
+  const { ctx, started, named } = loadSaving();
+  await ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB);
+  // Chrome passes only the first 1024 (151) or 8191 (153, 154) characters.
+  assert.deepStrictEqual(named(started[0].url.slice(0, 20)), { filename: 'shot-Page.jpg' });
+});
+
+test('a download with no URL is not taken for a shot', async () => {
+  const { ctx, named } = loadSaving();
+  await ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB);
+  assert.strictEqual(named(''), undefined);
+});
+
 test('leaves every other download for Chrome to name', () => {
   const { named } = loadSaving();
   assert.strictEqual(named('https://example.com/file.zip'), undefined);

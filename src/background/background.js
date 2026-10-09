@@ -1274,14 +1274,15 @@ async function blobToDataURL(blob) {
 // Chrome can drop downloads.download's filename and name a data: URL
 // "download.jpg" instead: another extension's onDeterminingFilename listener
 // outranks it (crbug.com/579563). A suggestion made here is what Chrome goes
-// by, so each shot is named here too, matched on its URL. Every other download
-// is left to Chrome.
+// by, so each shot is named here too. Chrome hands listeners only the start of
+// a data: URL (1024 characters in 151, 8191 in 153 and 154), so a shot is found
+// by the URL it starts with. Every other download is left to Chrome.
 const pendingNames = new Map();
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-  const filename = pendingNames.get(item.url);
-  if (!filename) { suggest(); return; }
-  pendingNames.delete(item.url);
-  suggest({ filename });
+  const url = item.url && [...pendingNames.keys()].find((u) => u.startsWith(item.url));
+  if (!url) { suggest(); return; }
+  suggest({ filename: pendingNames.get(url) });
+  pendingNames.delete(url);
 });
 
 async function saveCapture(png, opts, tab) {
