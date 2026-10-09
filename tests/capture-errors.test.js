@@ -2322,7 +2322,7 @@ test('the popup greys out the mode buttons and says it is capturing until the wo
   answer(true);
   await done;
   assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
-  assert.strictEqual(p.els.status.textContent, 'Saved.');
+  assert.strictEqual(p.els.status.hidden, true, 'a saved shot left a card behind');
 });
 
 test('the popup says a copy was copied', async () => {
@@ -2364,7 +2364,7 @@ test('the popup shows which screen Full page is on, and only for its own capture
   assert.strictEqual(p.els.status.textContent, 'Capturing screen 2 of 3…');
   answer(true);
   await done;
-  assert.strictEqual(p.els.status.textContent, 'Saved.');
+  assert.strictEqual(p.els.status.hidden, true, 'a saved shot left a card behind');
 });
 
 // --- one capture at a time (KAN-213) ---------------------------------------
@@ -2399,7 +2399,7 @@ test('the popup shows no other capture\'s screens while its own waits its turn',
   assert.strictEqual(p.els.status.textContent, 'Capturing screen 1 of 2…');
   answer(true);
   await done;
-  assert.strictEqual(p.els.status.textContent, 'Saved.');
+  assert.strictEqual(p.els.status.hidden, true, 'a saved shot left a card behind');
 });
 
 // --- Chrome's error page (KAN-546) ------------------------------------------
@@ -2506,7 +2506,7 @@ test('a popup opened during a capture it didn\'t send shows it, with its buttons
     p.message({ type: 'capture-progress', popupId, screen: 3, screens: 12 });
     assert.strictEqual(p.els.status.textContent, 'Capturing screen 3 of 12…');
     p.message({ type: 'capture-done', toClipboard: false });
-    assert.strictEqual(p.els.status.textContent, 'Saved.');
+    assert.strictEqual(p.els.status.hidden, true, 'a saved shot left a card behind');
     assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
   }
 });
@@ -2536,7 +2536,7 @@ test('a popup whose own capture waits its turn shows no other capture\'s end', a
   assert.strictEqual(p.els.err.hidden, true, 'showed another capture\'s error as its own');
   answer(true);
   await done;
-  assert.strictEqual(p.els.status.textContent, 'Saved.');
+  assert.strictEqual(p.els.status.hidden, true, 'a saved shot left a card behind');
 });
 
 test('a press before the popup hears what is running goes by its own capture', async () => {
@@ -2551,7 +2551,7 @@ test('a press before the popup hears what is running goes by its own capture', a
   assert.strictEqual(p.els.status.textContent, 'Capturing…', 'showed another capture\'s end as its own');
   answer(true);
   await done;
-  assert.strictEqual(p.els.status.textContent, 'Saved.');
+  assert.strictEqual(p.els.status.hidden, true, 'a saved shot left a card behind');
 });
 
 test('drops a capture\'s end quietly when no popup is open to hear it', async () => {
@@ -2598,7 +2598,7 @@ test('a popup shows a capture that starts while it is open, with its buttons gre
   p.message({ type: 'capture-progress', screen: 1, screens: 3 });
   assert.strictEqual(p.els.status.textContent, 'Capturing screen 1 of 3…');
   p.message({ type: 'capture-done', toClipboard: false });
-  assert.strictEqual(p.els.status.textContent, 'Saved.');
+  assert.strictEqual(p.els.status.hidden, true, 'a saved shot left a card behind');
   assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
 });
 
@@ -2628,6 +2628,6 @@ test('a popup whose own capture waits its turn shows no other capture that start
   assert.strictEqual(p.els.err.hidden, true, 'showed another capture\'s error as its own');
   answer(true);
   await done;
-  assert.strictEqual(p.els.status.textContent, 'Saved.');
+  assert.strictEqual(p.els.status.hidden, true, 'a saved shot left a card behind');
   assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
 });

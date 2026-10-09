@@ -12,6 +12,8 @@ const popupId = crypto.randomUUID(); // sent with this popup's captures; a Full 
 // One box at a time: an error, or how the capture is going.
 const showError = (text) => { $('status').hidden = true; const e = $('err'); e.textContent = text; e.hidden = false; };
 const showStatus = (text) => { $('err').hidden = true; const e = $('status'); e.textContent = text; e.hidden = false; };
+// How a capture ended well: a copy says so, a download just clears the card.
+const showDone = (toClipboard) => { if (toClipboard) showStatus('Copied to the clipboard.'); else $('status').hidden = true; };
 
 // Pages that aren't http(s), file, ftp, chrome://, another extension's page or
 // a data: URL are refused before anything is sent: captures there failed in the
@@ -213,7 +215,7 @@ document.querySelectorAll('#modes .mode').forEach((btn) => {
         if (shot) { capturing = false; toggleRec(); }
       }
       if (res?.error) { showError(res.error); return; } // keep the popup open so the error is visible
-      if (shot) showStatus(opts.toClipboard ? 'Copied to the clipboard.' : 'Saved.');
+      if (shot) showDone(opts.toClipboard);
       // Region hands the page over to a drag. Left open, the popup covers the
       // dimmed overlay, holds the focus its Escape-to-cancel needs, and makes
       // the dimming look like a bug rather than a live selection.
@@ -276,7 +278,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // How the capture this popup is watching ended (KAN-545). A capture this
   // popup sent is answered instead, and one that ends while this popup's waits
   // its turn isn't its own.
-  if (msg?.type === 'capture-done') { if (watching) { watching = false; toggleRec(); if (msg.error) showError(msg.error); else showStatus(msg.toClipboard ? 'Copied to the clipboard.' : 'Saved.'); } return; }
+  if (msg?.type === 'capture-done') { if (watching) { watching = false; toggleRec(); if (msg.error) showError(msg.error); else showDone(msg.toClipboard); } return; }
   if (msg?.type === 'shot-clipboard') {
     (async () => {
       try {
