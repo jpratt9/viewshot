@@ -1,5 +1,13 @@
 # ViewShot
 
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/prattsolutions)
+
+<p align="center">
+  <img src="screenshots/popup.png" width="260" align="top" alt="ViewShot's popup: Visible, Full page and Region, with the format, quality and filename options">
+  <img src="screenshots/popup-fullpage.png" width="260" align="top" alt="A full-page capture in progress: Capturing screen 3 of 8">
+  <img src="screenshots/popup-recording.png" width="260" align="top" alt="Recording the tab to MP4 with its audio, with Stop recording">
+</p>
+
 A fast, minimal, **open-source** Chrome extension for screenshots — capture the **visible area**, the **full page**, or a **region** of any tab and save it as PNG/JPG/WebP (or copy to clipboard). 100% local: no account, no cloud, no tracking.
 
 ## Features
