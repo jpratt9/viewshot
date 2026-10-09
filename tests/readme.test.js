@@ -59,3 +59,14 @@ test('the README says how to build the Web Store zip', () => {
   assert.ok(pkg.scripts?.package, 'package.json has no package script for the README to point at');
   assert.ok(readme.includes('`npm run package`'), 'the README never says to run `npm run package`');
 });
+
+// --- screenshots ----------------------------------------------------------
+// The README shows the popup from files in screenshots/, which nothing else
+// loads, so a renamed or missing one would only show up as a broken image.
+
+test('every image the README shows from the repo is there', () => {
+  const local = [...readme.matchAll(/<img src="([^"]+)"|!\[[^\]]*\]\(([^)\s]+)\)/g)]
+    .map((m) => m[1] || m[2]).filter((src) => !/^https?:/.test(src));
+  assert.ok(local.length, 'the README shows no screenshots');
+  for (const src of local) assert.ok(fs.existsSync(path.join(root, src)), `the README shows ${src}, which does not exist`);
+});
