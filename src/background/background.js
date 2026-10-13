@@ -65,9 +65,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     shot.catch(captureFailed);
   }
   else if (msg?.type === 'rec-failed') recFailed();
-  // A recording's file is saved and the document has let go of it. Nothing else
-  // closes the document after a recording; closeOffscreen still leaves it to a
-  // recording running in it, or another one still being saved.
+  // A recording's or a shot's file is saved and the document has let go of it.
+  // Nothing else closes the document after either; closeOffscreen still leaves
+  // it to a recording running in it, or another file still being saved.
   else if (msg?.type === 'rec-saved') closeOffscreen().catch((e) => console.error('[ViewShot]', e));
   // The popup reads `rec` from storage without waking the worker, so a leftover
   // key would go unnoticed for as long as the popup was the only thing running.
@@ -944,8 +944,8 @@ async function ensureOffscreen() {
     await getRec();
     await chrome.offscreen.createDocument({
       url: 'src/offscreen/offscreen.html',
-      reasons: ['CLIPBOARD', 'USER_MEDIA'],
-      justification: 'Write screenshots to the clipboard and record the tab to video',
+      reasons: ['CLIPBOARD', 'USER_MEDIA', 'BLOBS'],
+      justification: 'Write screenshots to the clipboard, save them as files and record the tab to video',
     });
     // Share cleanup, creation and readiness with every caller. A new recording
     // must not start while another caller is still clearing the old one's key.
@@ -980,11 +980,11 @@ async function closeOffscreen() {
     // the document in between lost the recording, so ask it first. One that
     // can't answer has no recording in it.
     if ((await chrome.runtime.sendMessage({ type: 'offscreen-busy' }).catch(() => false)) === true) return;
-    // Two uses of the document count as neither: a start, which writes `rec`
-    // only after ensureOffscreen, and a clipboard copy waiting on its write.
-    // Closing under a start left it recording nothing. Read after the awaits,
-    // so one that began during them counts as well.
-    if (recStartPending || copiesPending) return;
+    // Three uses of the document count as neither: a start, which writes `rec`
+    // only after ensureOffscreen, a clipboard copy waiting on its write, and a
+    // shot on its way to being saved. Closing under a start left it recording
+    // nothing. Read after the awaits, so one that began during them counts as well.
+    if (recStartPending || copiesPending || savesPending) return;
     await chrome.offscreen.closeDocument();
   } catch (e) {
     console.warn('[ViewShot] closeDocument failed:', e);
@@ -1271,32 +1271,33 @@ async function blobToDataURL(blob) {
   return `data:${blob.type};base64,${btoa(bin)}`;
 }
 
-// Chrome can drop downloads.download's filename and name a data: URL
-// "download.jpg" instead: another extension's onDeterminingFilename listener
-// outranks it (crbug.com/579563). A suggestion made here is what Chrome goes
-// by, so each shot is named here too. Chrome hands listeners only the start of
-// a data: URL (1024 characters in 151, 8191 in 153 and 154), so a shot is found
-// by the URL it starts with. Every other download is left to Chrome.
-const pendingNames = new Map();
-chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-  const url = item.url && [...pendingNames.keys()].find((u) => u.startsWith(item.url));
-  if (!url) { suggest(); return; }
-  suggest({ filename: pendingNames.get(url) });
-  pendingNames.delete(url);
-});
+// Saves still on their way: from their ensureOffscreen until the document
+// answers, when its own count takes over (see closeOffscreen).
+let savesPending = 0;
 
+// A shot is saved by the offscreen document as an <a download>, the way a
+// recording is, not with downloads.download. Every extension with an
+// onDeterminingFilename listener has a say in a download's name, and one whose
+// listener calls suggest() with no filename still counts as choosing one:
+// Chrome sends its conflictAction as '', not 'uniquify', so its empty name
+// always beats downloads.download's filename, and beats another listener's
+// name whenever its extension was installed or reloaded after that one
+// (crbug.com/579563). Chrome then falls back to "download" for a data: URL,
+// and shots came out as download.jpeg. The name on an <a download> is the one
+// Chrome starts from, and an empty suggestion leaves it as it is.
 async function saveCapture(png, opts, tab) {
   if (opts.toClipboard) {
     await copyImage(png, tab?.id);
   } else {
     const { dataUrl, ext } = await encode(png, opts);
     const filename = buildName(opts.filename, ext, tab);
-    pendingNames.set(dataUrl, filename);
+    savesPending++;
     try {
-      await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
-    } catch (e) {
-      pendingNames.delete(dataUrl); // it never started, so it will never be named
-      throw e;
+      await ensureOffscreen();
+      const res = await chrome.runtime.sendMessage({ type: 'shot-save-offscreen', dataUrl, filename });
+      if (res !== 'done') throw new Error(res?.error || 'The offscreen document did not save the shot');
+    } finally {
+      savesPending--;
     }
   }
 }

@@ -154,7 +154,6 @@ function load({ de, body, iw = 1512, ih = 767, dpr = 2, fixed = [], light = fixe
       },
       runtime: { onMessage: { addListener: (fn) => { onMessage = fn; } }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, sendMessage: async (m) => { sent.push({ ...m }); } }, // copy out of the vm realm
       commands: { onCommand: { addListener() {} } },
-      downloads: { onDeterminingFilename: { addListener() {} } },
       action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
       storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
       dom: {
@@ -1392,7 +1391,10 @@ function forRunCapture(ctx, session = {}) {
     remove: async (k) => { delete session[k]; },
   };
   const saved = [];
-  ctx.chrome.downloads = { download: async (o) => { saved.push(o.filename); } };
+  // A shot is saved by the offscreen document.
+  ctx.chrome.offscreen = { hasDocument: async () => true };
+  const send = ctx.chrome.runtime.sendMessage;
+  ctx.chrome.runtime.sendMessage = async (m) => { if (m.type === 'shot-save-offscreen') { saved.push(m.filename); return 'done'; } return send(m); };
   return saved;
 }
 

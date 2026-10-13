@@ -30,8 +30,10 @@ function loadBg({ scriptFails = false } = {}) {
         removeListener: (fn) => { const i = listeners.indexOf(fn); if (i !== -1) listeners.splice(i, 1); },
       },
       onStartup: { addListener() {} }, onInstalled: { addListener() {} },
-      sendMessage: async () => {},
+      // The offscreen document saving the shot.
+      sendMessage: async (m) => { if (m?.type === 'shot-save-offscreen') { order.push('download'); downloads.push(m); return 'done'; } },
     },
+    offscreen: { hasDocument: async () => true },
     commands: { onCommand: { addListener() {} } },
     tabs: {
       query: async () => [TAB],
@@ -45,7 +47,6 @@ function loadBg({ scriptFails = false } = {}) {
         return [{ result: o.func ? o.func.apply(null, o.args || []) : undefined }];
       },
     },
-    downloads: { download: async (d) => { order.push('download'); downloads.push(d); }, onDeterminingFilename: { addListener() {} } },
     storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({}) } },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };

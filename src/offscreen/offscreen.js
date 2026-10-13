@@ -23,6 +23,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Chrome won't paint the popup until that thread lets its onload finish.
   // Only its own write: shot-clipboard is the popup's (KAN-489).
   if (msg?.type === 'shot-clipboard-offscreen') { copyToClipboard(msg.dataUrl).then(() => sendResponse('done')).catch((e) => sendResponse({ error: e.message || String(e) })); return true; }
+  // A shot's file, saved from here so that Chrome keeps its name (see
+  // saveCapture in the worker).
+  if (msg?.type === 'shot-save-offscreen') { saveShot(msg.dataUrl, msg.filename).then(() => sendResponse('done')).catch((e) => sendResponse({ error: e.message || String(e) })); return true; }
   else if (msg?.type === 'rec-start-offscreen') { log('rec-start-offscreen, format=', msg.format, 'dims=', msg.width, 'x', msg.height, msg.cssPx ? '(css px)' : '', 'audio=', !!msg.audio); startRecording(msg.streamId, msg.format, msg.width, msg.height, msg.cssPx, msg.audio).catch(onRecError); }
   else if (msg?.type === 'rec-stop-offscreen') { log('rec-stop-offscreen, filename=', msg.filename); stopRecording(msg.filename); }
 });
@@ -30,6 +33,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 async function copyToClipboard(dataUrl) {
   const blob = await (await fetch(dataUrl)).blob();
   await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+}
+
+// Counted in `saving` before the first await, so offscreen-busy holds this
+// document open while the data is still being read; download() lets go of it.
+async function saveShot(dataUrl, filename) {
+  saving++;
+  try {
+    download(await (await fetch(dataUrl)).blob(), filename);
+  } catch (e) {
+    saving--;
+    throw e;
+  }
 }
 
 // ---- recording ----
@@ -42,7 +57,7 @@ const GIF_MAX_FRAMES = 600; // ~60s cap so addFrame copies don't exhaust memory
 // its own page calls (SCRIPT_TIMEOUT_MS).
 const VIDEO_TIMEOUT_MS = 2000;
 let rec = null; // { stream, format, playback?, recorder?, chunks?, gif?, timer?, frames? }
-let saving = 0; // recordings stopped but not saved yet (see stopRecording)
+let saving = 0; // recordings stopped but not saved yet (see stopRecording), and shots (saveShot)
 let lastStart = null; // { stopped }, so a Stop can reach a start still waiting on getUserMedia
 
 async function startRecording(streamId, format, width, height, cssPx, audio) {

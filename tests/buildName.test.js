@@ -50,18 +50,37 @@ test('truncates very long titles to 60 chars', () => {
   assert.strictEqual(name, 'a'.repeat(60) + '.png');
 });
 
-// --- Chrome naming the file -------------------------------------------------
-// With another extension's onDeterminingFilename listener installed, Chrome
-// dropped downloads.download's filename and saved every shot as download.jpg.
+// --- Chrome keeping the name ------------------------------------------------
+// Any extension listening to onDeterminingFilename had the last word on
+// downloads.download's filename, even by calling suggest() with nothing, and
+// every shot was saved as download.jpeg. A shot now goes to the offscreen
+// document, which saves it as an <a download> carrying its name.
 
-function loadSaving({ downloadFails = false } = {}) {
+// background.js with no chrome.downloads at all, as Chrome hands it over now
+// that the manifest doesn't ask for it. `save` is the offscreen document's
+// answer to a save.
+function loadSaving({ open = true, save = async () => 'done' } = {}) {
   const code = fs.readFileSync(path.join(__dirname, '..', 'src/background/background.js'), 'utf8');
   const deep = () => new Proxy(function () {}, { get: () => deep(), apply: () => undefined });
-  let determine;
-  const started = [];
-  const downloads = {
-    onDeterminingFilename: { addListener: (fn) => { determine = fn; } },
-    download: async (o) => { started.push({ ...o }); if (downloadFails) throw new Error('Invalid filename'); },
+  const sent = [];
+  const doc = { open, created: [], closes: 0 };
+  const chrome = {
+    runtime: {
+      onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} },
+      sendMessage: async (m) => {
+        sent.push({ ...m });
+        if (m.type === 'offscreen-ping') return 'pong';
+        if (m.type === 'offscreen-busy') return false;
+        if (m.type === 'shot-save-offscreen') return save(m);
+      },
+    },
+    offscreen: {
+      hasDocument: async () => doc.open,
+      createDocument: async (o) => { doc.created.push(o); doc.open = true; },
+      closeDocument: async () => { doc.closes++; doc.open = false; },
+    },
+    storage: { local: { get: async () => ({}) } },
+    downloads: undefined,
   };
   class FakeCanvas {
     constructor(w, h) { this.width = w; this.height = h; }
@@ -69,60 +88,54 @@ function loadSaving({ downloadFails = false } = {}) {
     async convertToBlob({ type }) { return { type, arrayBuffer: async () => new Uint8Array([1]).buffer }; }
   }
   const context = {
-    chrome: new Proxy({ downloads }, { get: (t, k) => (k in t ? t[k] : deep()) }),
-    console, URL, btoa, setTimeout, clearTimeout, Date,
+    chrome: new Proxy(chrome, { get: (t, k) => (k in t ? t[k] : deep()) }),
+    console: { ...console, log: () => {} }, URL, btoa, setTimeout, clearTimeout, Date,
     OffscreenCanvas: FakeCanvas,
     createImageBitmap: async () => ({ width: 100, height: 100 }),
     fetch: async () => ({ blob: async () => ({}) }),
   };
   vm.createContext(context);
   vm.runInContext(code, context);
-  // What Chrome is told to call a download at `url`: undefined is "decide
-  // yourself", 'unanswered' means the listener left Chrome waiting.
-  const named = (url) => {
-    let out = 'unanswered';
-    determine({ url }, (s) => { out = s && { ...s }; });
-    return out;
-  };
-  return { ctx: context, started, named };
+  return { ctx: context, sent, doc, saves: () => sent.filter((m) => m.type === 'shot-save-offscreen') };
 }
 
+const PNG = 'data:image/png;base64,AAAA';
 const OPTS = { format: 'jpg', quality: 0.92, filename: 'shot-{title}', toClipboard: false };
 const TAB = { url: 'https://a.com', title: 'Page' };
 
-test('names its own shot in the step Chrome actually goes by', async () => {
-  const { ctx, started, named } = loadSaving();
-  await ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB);
-  assert.deepStrictEqual(named(started[0].url), { filename: 'shot-Page.jpg' });
+test('a shot goes to the offscreen document under its name, and never to chrome.downloads', async () => {
+  const { ctx, saves } = loadSaving();
+  await ctx.saveCapture(PNG, OPTS, TAB);
+  const [save] = saves();
+  assert.strictEqual(save.filename, 'shot-Page.jpg');
+  assert.match(save.dataUrl, /^data:image\/jpeg;base64,/);
 });
 
-test('finds its shot from the cut-down URL Chrome hands the listener', async () => {
-  const { ctx, started, named } = loadSaving();
-  await ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB);
-  // Chrome passes only the first 1024 (151) or 8191 (153, 154) characters.
-  assert.deepStrictEqual(named(started[0].url.slice(0, 20)), { filename: 'shot-Page.jpg' });
+test('opens the offscreen document for a shot when none is open', async () => {
+  const { ctx, sent, doc } = loadSaving({ open: false });
+  await ctx.saveCapture(PNG, OPTS, TAB);
+  assert.strictEqual(doc.created.length, 1);
+  assert.ok(doc.created[0].reasons.includes('BLOBS'), 'the shot is saved from a blob: URL');
+  const types = sent.map((m) => m.type);
+  assert.ok(types.indexOf('offscreen-ping') < types.indexOf('shot-save-offscreen'), 'sent before the document was listening');
 });
 
-test('a download with no URL is not taken for a shot', async () => {
-  const { ctx, named } = loadSaving();
-  await ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB);
-  assert.strictEqual(named(''), undefined);
+test('a shot the offscreen document did not save fails the capture', async () => {
+  const { ctx } = loadSaving({ save: async () => ({ error: 'Failed to fetch' }) });
+  await assert.rejects(() => ctx.saveCapture(PNG, OPTS, TAB), /Failed to fetch/);
+  const { ctx: unanswered } = loadSaving({ save: async () => undefined });
+  await assert.rejects(() => unanswered.saveCapture(PNG, OPTS, TAB), /did not save/);
 });
 
-test('leaves every other download for Chrome to name', () => {
-  const { named } = loadSaving();
-  assert.strictEqual(named('https://example.com/file.zip'), undefined);
-});
-
-test('a shot is named once, and not held onto afterwards', async () => {
-  const { ctx, started, named } = loadSaving();
-  await ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB);
-  named(started[0].url);
-  assert.strictEqual(named(started[0].url), undefined);
-});
-
-test('a download that never starts is not left waiting for a name', async () => {
-  const { ctx, started, named } = loadSaving({ downloadFails: true });
-  await assert.rejects(() => ctx.saveCapture('data:image/png;base64,AAAA', OPTS, TAB));
-  assert.strictEqual(named(started[0].url), undefined);
+test('the offscreen document is not closed under a shot on its way to it', async () => {
+  let answer;
+  const { ctx, doc } = loadSaving({ save: () => new Promise((r) => { answer = r; }) });
+  const saving = ctx.saveCapture(PNG, OPTS, TAB);
+  await new Promise((r) => setImmediate(r)); // sent, and not answered yet
+  await ctx.closeOffscreen(); // a clipboard copy finishing, say
+  assert.strictEqual(doc.closes, 0, 'closed the document the shot was sent to');
+  answer('done');
+  await saving;
+  await ctx.closeOffscreen(); // from here, the document says whether it is busy
+  assert.strictEqual(doc.closes, 1, 'the finished save still held the document open');
 });

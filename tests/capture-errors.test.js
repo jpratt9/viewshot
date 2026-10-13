@@ -47,7 +47,11 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
       onStartup: { addListener() {} }, onInstalled: { addListener() {} },
       // The page's blip reports through here, and Chrome hands a page's message
       // to every listener the worker has.
-      sendMessage: async (m) => { if (m?.type === 'blip-done') listeners.slice().forEach((fn) => fn(m, {}, () => {})); },
+      // A shot is saved by the offscreen document, which answers 'done'.
+      sendMessage: async (m) => {
+        if (m?.type === 'blip-done') listeners.slice().forEach((fn) => fn(m, {}, () => {}));
+        if (m?.type === 'shot-save-offscreen') return 'done';
+      },
     },
     commands: { onCommand: { addListener: (fn) => { onCommand = fn; } } },
     tabs: {
@@ -68,7 +72,7 @@ function loadBg({ captureFails = null, captureHangs = null, scriptFails = false,
         return [{ result: o.func ? o.func.apply(null, o.args || []) : undefined }];
       },
     },
-    downloads: { download: async () => {}, onDeterminingFilename: { addListener() {} } },
+    offscreen: { hasDocument: async () => true }, // already open for the shot's save
     storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
     action: {
       setBadgeText: async ({ text }) => { if (text) badges.push(text); },
@@ -2294,7 +2298,8 @@ const MODES = ['visible', 'fullpage', 'region'];
 test('a Visible capture from the popup is answered once the image is saved', async () => {
   const bg = loadBg();
   const order = [];
-  bg.ctx.chrome.downloads.download = async () => { order.push('downloaded'); };
+  const send = bg.ctx.chrome.runtime.sendMessage;
+  bg.ctx.chrome.runtime.sendMessage = async (m) => { if (m.type === 'shot-save-offscreen') order.push('downloaded'); return send(m); };
   const ret = bg.message({ type: 'capture', mode: 'visible', opts: OPTS, tabId: TAB.id }, (v) => order.push(v));
   assert.strictEqual(ret, true, 'the port has to stay open for an answer that comes later');
   await settle();
@@ -2476,8 +2481,8 @@ test('tells a popup that opens whether a Visible or Full page is running', async
 test('tells every popup how a Visible or Full page ended', async () => {
   const bg = loadBg({ captureFails: (n) => n === 3 && 'Tabs cannot be edited right now' });
   const sent = [];
-  // An open popup answers the worker's clipboard write.
-  bg.ctx.chrome.runtime.sendMessage = async (m) => { sent.push(JSON.parse(JSON.stringify(m))); return m.type === 'shot-clipboard' ? 'done' : undefined; }; // copy out of the vm realm
+  // An open popup answers the worker's clipboard write, and the offscreen document its save.
+  bg.ctx.chrome.runtime.sendMessage = async (m) => { sent.push(JSON.parse(JSON.stringify(m))); return m.type === 'shot-clipboard' || m.type === 'shot-save-offscreen' ? 'done' : undefined; }; // copy out of the vm realm
   await bg.ctx.runCapture('visible', OPTS, TAB.id);
   await bg.ctx.runCapture('visible', { ...OPTS, toClipboard: true }, TAB.id);
   await assert.rejects(bg.ctx.runCapture('visible', OPTS, TAB.id));
@@ -2556,8 +2561,9 @@ test('a press before the popup hears what is running goes by its own capture', a
 
 test('drops a capture\'s end quietly when no popup is open to hear it', async () => {
   const bg = loadBg();
-  // A shortcut's capture, with no popup open: Chrome rejects the send.
-  bg.ctx.chrome.runtime.sendMessage = async () => { throw new Error('Could not establish connection. Receiving end does not exist.'); };
+  // A shortcut's capture, with no popup open: only the offscreen document saving
+  // the shot is there to answer, and Chrome rejects every other send.
+  bg.ctx.chrome.runtime.sendMessage = async (m) => { if (m.type === 'shot-save-offscreen') return 'done'; throw new Error('Could not establish connection. Receiving end does not exist.'); };
   await bg.ctx.runCapture('visible', OPTS, TAB.id);
   await settle();
   assert.strictEqual(bg.shots.length, 1);
@@ -2580,7 +2586,7 @@ test('a popup that can\'t ask the worker what is running is left as it was', asy
 test('tells every popup when a Visible or Full page starts, after the one before it has ended', async () => {
   const bg = loadBg();
   const sent = [];
-  bg.ctx.chrome.runtime.sendMessage = async (m) => { sent.push(m.type); };
+  bg.ctx.chrome.runtime.sendMessage = async (m) => { sent.push(m.type); if (m.type === 'shot-save-offscreen') return 'done'; };
   const first = bg.ctx.runCapture('visible', OPTS, TAB.id); // a shortcut pressed twice
   await bg.ctx.runCapture('visible', OPTS, TAB.id);
   await first;
@@ -2630,4 +2636,58 @@ test('a popup whose own capture waits its turn shows no other capture that start
   await done;
   assert.strictEqual(p.els.status.hidden, true, 'a saved shot left a card behind');
   assert.deepStrictEqual(MODES.map((m) => p.btn(m).disabled), [false, false, false]);
+});
+
+// --- a shot saved by the offscreen document ----------------------------------
+// Chrome kept downloads.download's filename only while no other extension
+// listened to onDeterminingFilename. A shot is saved here instead, by an
+// <a download> with its name on it: the name Chrome starts from.
+
+function shotSaving(o) {
+  const anchors = [];
+  const create = o.ctx.document.createElement;
+  o.ctx.document.createElement = (tag) => {
+    const el = create(tag);
+    if (tag === 'a') { el.click = () => { el.clicked = true; }; anchors.push(el); }
+    return el;
+  };
+  o.ctx.fetch = async (url) => ({ blob: async () => ({ type: 'image/jpeg', from: url }) });
+  return anchors;
+}
+
+test('the offscreen document saves a shot through an <a download> with its name', async () => {
+  const o = loadOffscreen();
+  const anchors = shotSaving(o);
+  const replies = [];
+  o.message({ type: 'shot-save-offscreen', dataUrl: 'data:image/jpeg;base64,AAAA', filename: 'shot-Page.jpg' }, (r) => replies.push(r));
+  await settle();
+  assert.deepStrictEqual(replies, ['done']);
+  assert.strictEqual(anchors.length, 1);
+  assert.strictEqual(anchors[0].download, 'shot-Page.jpg');
+  assert.strictEqual(anchors[0].href, 'blob:x');
+  assert.strictEqual(anchors[0].clicked, true);
+  assert.strictEqual(o.downloads[0][0].from, 'data:image/jpeg;base64,AAAA', 'saved something other than the shot');
+});
+
+test('the offscreen document holds itself open until a shot\'s file is let go of', async () => {
+  const o = loadOffscreen();
+  shotSaving(o);
+  o.message({ type: 'shot-save-offscreen', dataUrl: 'data:image/jpeg;base64,AAAA', filename: 'a.jpg' });
+  assert.strictEqual(busy(o), true, 'not busy while the shot was still being read: the worker could close it');
+  await settle();
+  assert.strictEqual(busy(o), true, 'not busy while the download still reads from its URL');
+  o.runTimers(); // a minute on
+  assert.strictEqual(busy(o), false);
+  assert.ok(o.sent.some((m) => m.type === 'rec-saved'), 'the worker was never told it could close the document');
+});
+
+test('a shot the offscreen document can\'t read is answered with the error, and holds nothing open', async () => {
+  const o = loadOffscreen();
+  o.ctx.fetch = async () => { throw new Error('Failed to fetch'); };
+  const replies = [];
+  o.message({ type: 'shot-save-offscreen', dataUrl: 'data:,', filename: 'a.jpg' }, (r) => replies.push(r));
+  await settle();
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(replies)), [{ error: 'Failed to fetch' }]); // copy out of the vm realm
+  assert.strictEqual(busy(o), false);
+  assert.deepStrictEqual(o.downloads, []);
 });

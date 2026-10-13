@@ -28,14 +28,16 @@ async function pressShortcut(command, format) {
     async convertToBlob({ type }) { return { type, arrayBuffer: async () => new Uint8Array([1]).buffer }; }
   }
   const chrome = {
-    runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, sendMessage: async () => {} },
+    // The shot is saved by the offscreen document, so what it is handed is the download.
+    runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} },
+      sendMessage: async (m) => { if (m?.type === 'shot-save-offscreen') { downloads.push({ url: m.dataUrl, filename: m.filename }); return 'done'; } } },
+    offscreen: { hasDocument: async () => true },
     commands: { onCommand: { addListener: (fn) => { onCommand = fn; } } },
     tabs: {
       query: async () => [{ id: 7, windowId: 1, url: 'https://a.com', title: 'T' }],
       captureVisibleTab: async () => 'data:image/png;base64,AAAA',
     },
     scripting: { insertCSS: async () => {}, removeCSS: async () => {}, executeScript: async () => [{}] },
-    downloads: { download: async (o) => { downloads.push(o); }, onDeterminingFilename: { addListener() {} } },
     storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: { get: async () => ({ opts: { format, filename: 'shot' } }) } },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
   };
@@ -86,7 +88,6 @@ function recordingBrowser(format = 'webm', storedRec = null, saved = {}) {
       sendMessage: async (m) => { calls.sent.push(m); return m.type === 'offscreen-id' ? 'doc' : 'pong'; },
     },
     commands: { onCommand: { addListener(fn) { onCommand = fn; } } },
-    downloads: { onDeterminingFilename: { addListener() {} } },
     storage: { session: (() => { let s = {}; return { get: async (k) => ({ [k]: s[k] }), set: async (o) => Object.assign(s, o), remove: async (k) => delete s[k] }; })(), local: {
       get: async (key) => key === 'rec' ? { rec } : { opts: { format, filename: 'recording', ...saved } },
       set: async (v) => { if ('rec' in v) rec = v.rec; },

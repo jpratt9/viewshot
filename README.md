@@ -28,10 +28,9 @@ A fast, minimal, **open-source** Chrome extension for screenshots — capture th
 
 ## Permissions
 - `activeTab` — capture the tab you clicked the icon or pressed a shortcut on
-- `downloads` — save screenshots
 - `scripting` — run the region selector, full-page scrolling and scrollbar hiding in that tab
 - `storage` — remember your settings and whether a recording is running
-- `offscreen` — copy to the clipboard and record, which the background service worker can't do
+- `offscreen` — copy to the clipboard, save screenshots and record, which the background service worker can't do
 - `tabCapture` — get the tab's video, and its audio when **Record tab audio** is on, for recording
 - `clipboardWrite` — copy screenshots directly to your clipboard
 
